@@ -334,6 +334,22 @@ int mayo_expand_sk(const mayo_params_t *p, const unsigned char *csk, sk_t *sk) {
 
   shake256(S, param_pk_seed_bytes + param_O_bytes, seed_sk,
            param_sk_seed_bytes);
+
+  printf("Parameters: %d %d %d\r\n", param_pk_seed_bytes, param_O_bytes, param_sk_seed_bytes);
+
+  printf("seed_kS:\r\n");
+    for(int i = 0; i < MAYO_2_sk_seed_bytes; i++)
+    {
+        printf("%02x, ", seed_sk[i]);
+    }
+  printf("\r\n");
+
+  printf("FIRST SHAKE256:\r\n");
+    for(int i = 0; i < MAYO_2_pk_seed_bytes + MAYO_2_O_bytes; i++)
+    {
+        printf("%02x, ", S[i]);
+    }
+    printf("\r\n");
   decode(S + param_pk_seed_bytes, O, param_v * param_o);
 
 #ifdef ENABLE_CT_TESTING

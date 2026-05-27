@@ -35,6 +35,9 @@ OBJS = $(OBJ_DIR)/main.o $(OBJ_DIR)/mayo.o $(OBJ_DIR)/inputs.o $(OBJ_DIR)/fips20
 $(EXE) : $(OBJS)
 	$(NVCC) $(NVCC_FLAGS) $(OBJS) -o $@ $(CUDA_INC_DIR) $(CUDA_LIB_DIR) $(CUDA_LINK_LIBS)
 
+$(OBJ_DIR)/main.o : main.cu
+	$(NVCC) $(NVCC_FLAGS) -I$(INC_DIR) $(CUDA_INC_DIR) -c $< -o $@
+
 $(OBJ_DIR)/%.o : $(SRC_DIR)/%.cu
 	$(NVCC) $(NVCC_FLAGS) -I$(INC_DIR) $(CUDA_INC_DIR) -c $< -o $@
 

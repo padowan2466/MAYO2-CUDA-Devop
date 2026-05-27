@@ -4,23 +4,41 @@
 #include "inputs.cuh"
 #include "parameters.cuh"
 #include "mayo.cuh"
+#include <stdlib.h>
 
+#define PRINT_KEYS 0
 
 int main()
 {
-  
-  
-    printf("pk: ");
-  for (int i = 0; i < MAYO_2_cpk_bytes; i++) {
-    printf("%02x, ", pk[i]);
-  }
-  printf("\n");
+    int res = MAYO_OK;
+    unsigned char msg[32] = {0xe};
 
-  printf("sk: ");
-  for (int i = 0; i < MAYO_2_csk_bytes; i++) {
+    size_t msglen = 32;
+    size_t smlen = MAYO_2_sig_bytes + msglen;
+
+    unsigned char *sig = (unsigned char *)calloc(smlen, 1);
+
+
+
+#if PRINT_KEYS
+    printf("pk: ");
+    for (int i = 0; i < MAYO_2_cpk_bytes; i++) {
+    printf("%02x, ", pk[i]);
+    }
+    printf("\n");
+
+    printf("sk: ");
+    for (int i = 0; i < MAYO_2_csk_bytes; i++) {
     printf("%02x, ", sk[i]);
-  }
-  printf("\n");
+    }
+    printf("\n");
+#endif
+
+    printf("Start sign\r\n");
+
+    res = mayo2_sign(sig, &smlen, msg, msglen, sk);
+
+
 
 
     return 0;

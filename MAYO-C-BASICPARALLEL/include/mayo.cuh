@@ -3,7 +3,19 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+#include "fips202.cuh"
 
+/**
+ * Status codes
+ */
+#define MAYO_OK 0
+#define MAYO_ERR 1
+
+
+/*
+ MAYO2 - PARAMETERS
+*/
 #define MAYO_2_name "MAYO_2"
 #define MAYO_2_n 81
 #define MAYO_2_m 64
@@ -29,6 +41,12 @@
 #define MAYO_2_digest_bytes 32
 #define MAYO_2_pk_seed_bytes 16
 #define MAYO_2_sk_seed_bytes 24
+
+
+/* Functions */
+int mayo2_sign(unsigned char *sm,
+              size_t *smlen, const unsigned char *m,
+              size_t mlen, const unsigned char *csk);
 
 
 #endif
