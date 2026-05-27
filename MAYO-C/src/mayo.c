@@ -31,6 +31,16 @@ static void decode(const unsigned char *m, unsigned char *mdec, int mdeclen) {
   }
 }
 
+void printElement(unsigned char* element, int n, char* title)
+{
+  printf("%s\r\n",title);
+  for(int i = 0; i < n; i++)
+  {
+    printf("%02x, ",element[i]);
+  }
+  printf("\r\n");
+}
+
 static void encode(const unsigned char *m, unsigned char *menc, int mlen) {
   int i;
   for (i = 0; i < mlen / 2; ++i, m += 2) {
@@ -335,23 +345,12 @@ int mayo_expand_sk(const mayo_params_t *p, const unsigned char *csk, sk_t *sk) {
   shake256(S, param_pk_seed_bytes + param_O_bytes, seed_sk,
            param_sk_seed_bytes);
 
-  printf("Parameters: %d %d %d\r\n", param_pk_seed_bytes, param_O_bytes, param_sk_seed_bytes);
 
-  printf("seed_kS:\r\n");
-    for(int i = 0; i < MAYO_2_sk_seed_bytes; i++)
-    {
-        printf("%02x, ", seed_sk[i]);
-    }
-  printf("\r\n");
+  
 
-  printf("FIRST SHAKE256:\r\n");
-    for(int i = 0; i < MAYO_2_pk_seed_bytes + MAYO_2_O_bytes; i++)
-    {
-        printf("%02x, ", S[i]);
-    }
-    printf("\r\n");
+  // printElement(S, param_pk_seed_bytes + param_O_bytes, "First Shake");
   decode(S + param_pk_seed_bytes, O, param_v * param_o);
-
+  printElement(O, param_v * param_o, "O");
 #ifdef ENABLE_CT_TESTING
   VALGRIND_MAKE_MEM_DEFINED(seed_pk, param_pk_seed_bytes);
 #endif

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdalign.h>
 #include "fips202.cuh"
 
 /**
@@ -41,6 +42,17 @@
 #define MAYO_2_digest_bytes 32
 #define MAYO_2_pk_seed_bytes 16
 #define MAYO_2_sk_seed_bytes 24
+
+#define M_VEC_LIMBS_MAX 9
+
+
+#define P1_LIMBS_MAX (MAYO_2_v*(MAYO_2_v+1)/2*M_VEC_LIMBS_MAX)
+#define P2_LIMBS_MAX (MAYO_2_v*MAYO_2_o*M_VEC_LIMBS_MAX)
+
+typedef struct sk_t {
+    uint64_t p[P1_LIMBS_MAX + P2_LIMBS_MAX];
+    uint8_t O[MAYO_2_v*MAYO_2_o];
+} sk_t;
 
 
 /* Functions */
