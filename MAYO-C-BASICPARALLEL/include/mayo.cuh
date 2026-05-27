@@ -1,0 +1,34 @@
+#ifndef MAYO_H
+#define MAYO_H
+
+#include <stdint.h>
+#include <stdlib.h>
+
+#define MAYO_2_name "MAYO_2"
+#define MAYO_2_n 81
+#define MAYO_2_m 64
+#define MAYO_2_m_vec_limbs 4
+#define MAYO_2_o 17
+#define MAYO_2_v (MAYO_2_n - MAYO_2_o)
+#define MAYO_2_A_cols (MAYO_2_k * MAYO_2_o + 1)
+#define MAYO_2_k 4
+#define MAYO_2_q 16
+#define MAYO_2_m_bytes 32
+#define MAYO_2_O_bytes 544
+#define MAYO_2_v_bytes 32
+#define MAYO_2_r_bytes 34
+#define MAYO_2_P1_bytes 66560
+#define MAYO_2_P2_bytes 34816
+#define MAYO_2_P3_bytes 4896
+#define MAYO_2_csk_bytes 24
+#define MAYO_2_cpk_bytes 4912
+#define MAYO_2_sig_bytes 186
+#define MAYO_2_f_tail F_TAIL_64
+#define MAYO_2_f_tail_arr f_tail_64
+#define MAYO_2_salt_bytes 24
+#define MAYO_2_digest_bytes 32
+#define MAYO_2_pk_seed_bytes 16
+#define MAYO_2_sk_seed_bytes 24
+
+
+#endif
