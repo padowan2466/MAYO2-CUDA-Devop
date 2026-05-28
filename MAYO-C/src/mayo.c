@@ -372,7 +372,7 @@ int mayo_expand_sk(const mayo_params_t *p, const unsigned char *csk, sk_t *sk) {
   // compute L_i = (P1 + P1^t)*O + P2
   uint64_t *L = P2;
   P1P1t_times_O(p, P1, O, L);
-  printElement((unsigned char *)L, PARAM_P2_limbs(p) * sizeof(uint64_t), "P2:");
+  // printElement((unsigned char *)L, PARAM_P2_limbs(p) * sizeof(uint64_t), "P2:");
 
 #ifdef TARGET_BIG_ENDIAN
   for (int i = 0; i < PARAM_P1_limbs(p) + PARAM_P2_limbs(p); ++i) {
@@ -424,7 +424,18 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
   if (ret != MAYO_OK) {
     goto err;
   }
+  // printElement(sk.O,
+  //            PARAM_v(p) * PARAM_o(p),
+  //            "O After mayo_expand_sk:");
 
+  // printElement((unsigned char *)sk.p,
+  //            PARAM_P1_limbs(p) * sizeof(uint64_t),
+  //            "P1 after mayo_expand_sk:");
+
+  printElement((unsigned char *)(sk.p + PARAM_P1_limbs(p)),
+             PARAM_P2_limbs(p) * sizeof(uint64_t),
+             "L/P2 after mayo_expand_sk:");
+  printf("%d %d\r\n",PARAM_P2_limbs(p), PARAM_P1_limbs(p));
   seed_sk = csk;
 
   printf("\nmsg\n");

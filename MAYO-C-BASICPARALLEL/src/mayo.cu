@@ -25,6 +25,9 @@ __device__ __forceinline__ int upper_triangular_index(int r,
                                                       int c, 
                                                       int param_v);
 
+void mayo_secure_clear(void *mem, 
+                       size_t size); 
+
 void printElement(unsigned char* element, int n, const char* title)
 {
   printf("%s\r\n",title);
@@ -60,6 +63,18 @@ int mayo2_sign_signature(unsigned char *sig,
     int ret = MAYO_OK;
     alignas(32) sk_t sk; 
     ret = mayo_expand_sk(csk, &sk);
+    // printElement(sk.O,
+    //          MAYO_2_v * MAYO_2_o,
+    //          "O After mayo_expand_sk:");
+
+//   printElement((unsigned char *)sk.p,
+//              P1_LIMBS_MAX * sizeof(uint64_t),
+//              "P1 after mayo_expand_sk:");
+
+//   printElement((unsigned char *)(sk.p + P1_LIMBS_MAX),
+//              P2_LIMBS_MAX * sizeof(uint64_t),
+//              "L/P2 after mayo_expand_sk:");
+//              printf("%d %d\r\n",P2_LIMBS_MAX, P1_LIMBS_MAX);
     
 
     return ret;
@@ -173,9 +188,7 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
 
 
     /******************** P1P1t_times_O *************************/
-    
     // compute L_i = (P1 + P1^t)*O + P2
-
     blocks = ((MAYO_2_v * MAYO_2_o) + 255) / 256;
 
 
@@ -187,17 +200,15 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
     
     cudaDeviceSynchronize();
     
-    uint64_t *h_P2_tmp;
-    cudaMallocHost((void**)&h_P2_tmp, P2_LIMBS_MAX * sizeof(uint64_t));
+    cudaMemcpy(h_P,
+           d_P_limbs,
+           (P1_LIMBS_MAX + P2_LIMBS_MAX) * sizeof(uint64_t),
+           cudaMemcpyDeviceToHost);
 
-    cudaMemcpy(h_P2_tmp,
-            d_P_limbs + P1_LIMBS_MAX,
-            P2_LIMBS_MAX * sizeof(uint64_t),
-            cudaMemcpyDeviceToHost);
+    /*********************************************************/
 
-    printElement((unsigned char *)h_P2_tmp,
-                P2_LIMBS_MAX * sizeof(uint64_t),
-                "P2:");
+    mayo_secure_clear(h_S,MAYO_2_pk_seed_bytes + MAYO_2_O_bytes);
+
 
 
 
@@ -213,7 +224,7 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
     cudaFreeHost(h_mdeclen);
     cudaFreeHost(h_O);
 
-    cudaFreeHost(h_P2_tmp);
+    // cudaFreeHost(h_P2_tmp);
 
     return ret;
 }
@@ -336,4 +347,11 @@ int upper_triangular_index(int r,
                            int param_v)
 {
     return r * param_v - (r * (r - 1)) / 2 + (c - r);
+}
+
+void mayo_secure_clear(void *mem, size_t size) 
+{
+    typedef void *(*memset_t)(void *, int, size_t);
+    static volatile memset_t memset_func = memset;
+    memset_func(mem, 0, size);
 }
