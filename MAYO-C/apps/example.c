@@ -71,19 +71,29 @@ static int example_mayo(const mayo_params_t *p) {
   }
 
   // wklee these are the inputs we need for GPU implementation.
-  printf("pk: ");
-  for (int i = 0; i < PARAM_cpk_bytes(p); i++) {
-    printf("%02x, ", pk[i]);
-  }
-  printf("\n");
+  // printf("pk: ");
+  // for (int i = 0; i < PARAM_cpk_bytes(p); i++) {
+  //   printf("%02x, ", pk[i]);
+  // }
+  // printf("\n");
 
-  printf("sk: ");
-  for (int i = 0; i < PARAM_csk_bytes(p); i++) {
-    printf("%02x, ", sk[i]);
-  }
-  printf("\n");
+  // printf("sk: ");
+  // for (int i = 0; i < PARAM_csk_bytes(p); i++) {
+  //   printf("%02x, ", sk[i]);
+  // }
+  // printf("\n");
 
-  //   printf("Message: ");
+  //   printf("Message: ");  // printf("pk: ");
+  // for (int i = 0; i < PARAM_cpk_bytes(p); i++) {
+  //   printf("%02x, ", pk[i]);
+  // }
+  // printf("\n");
+
+  // printf("sk: ");
+  // for (int i = 0; i < PARAM_csk_bytes(p); i++) {
+  //   printf("%02x, ", sk[i]);
+  // }
+  // printf("\n");
   //   for (size_t i = 0; i < msglen; i++) {
   //     printf("%02x, ", msg[i]);
   //   }

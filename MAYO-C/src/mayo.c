@@ -298,6 +298,7 @@ static void expand_P1_P2(const mayo_params_t *p, uint64_t *P,
 #endif
   PK_PRF((unsigned char *)P, PARAM_P1_bytes(p) + PARAM_P2_bytes(p), seed_pk,
          PARAM_pk_seed_bytes(p));
+
   unpack_m_vecs((unsigned char *)P, P,
                 (PARAM_P1_limbs(p) + PARAM_P2_limbs(p)) / PARAM_m_vec_limbs(p),
                 PARAM_m(p));
@@ -350,12 +351,14 @@ int mayo_expand_sk(const mayo_params_t *p, const unsigned char *csk, sk_t *sk) {
 
   // printElement(S, param_pk_seed_bytes + param_O_bytes, "First Shake");
   decode(S + param_pk_seed_bytes, O, param_v * param_o);
-  printElement(O, param_v * param_o, "O");
+  // printElement(O, param_v * param_o, "O");
 #ifdef ENABLE_CT_TESTING
   VALGRIND_MAKE_MEM_DEFINED(seed_pk, param_pk_seed_bytes);
 #endif
 
   expand_P1_P2(p, P, seed_pk);
+  // printElement((unsigned char *)P, PARAM_P1_bytes(p) + PARAM_P2_bytes(p), "PDespues:");
+
 #ifdef TARGET_BIG_ENDIAN
   for (int i = 0; i < PARAM_P1_limbs(p) + PARAM_P2_limbs(p); ++i) {
     P[i] = BSWAP64(P[i]);
@@ -369,6 +372,7 @@ int mayo_expand_sk(const mayo_params_t *p, const unsigned char *csk, sk_t *sk) {
   // compute L_i = (P1 + P1^t)*O + P2
   uint64_t *L = P2;
   P1P1t_times_O(p, P1, O, L);
+  printElement((unsigned char *)L, PARAM_P2_limbs(p) * sizeof(uint64_t), "P2:");
 
 #ifdef TARGET_BIG_ENDIAN
   for (int i = 0; i < PARAM_P1_limbs(p) + PARAM_P2_limbs(p); ++i) {
