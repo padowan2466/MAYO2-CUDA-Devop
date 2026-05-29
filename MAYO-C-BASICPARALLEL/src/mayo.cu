@@ -72,10 +72,14 @@ int mayo2_sign_signature(unsigned char *sig,
     unsigned char *h_tmp, *d_tmp;//[DIGEST_BYTES_MAX + SALT_BYTES_MAX + SK_SEED_BYTES_MAX + 1];
     unsigned char *d_m;
 
-    cudaMallocHost((void**)&h_tmp,(MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*sizeof(unsigned char));
+    unsigned char *h_salt, *d_salt;//[SALT_BYTES_MAX];
 
-    cudaMalloc((void**)&d_tmp,(MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*sizeof(unsigned char));
+    cudaMallocHost((void**)&h_tmp,MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1);
+    cudaMallocHost((void**)&h_salt, MAYO_2_salt_bytes);
+
+    cudaMalloc((void**)&d_tmp,MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1);
     cudaMalloc((void**)&d_m, mlen);
+    cudaMalloc((void**)&d_salt, MAYO_2_salt_bytes);
 
     alignas(32) sk_t sk;
     ret = mayo_expand_sk(csk, &sk);
@@ -100,18 +104,37 @@ int mayo2_sign_signature(unsigned char *sig,
 
     printElement(h_tmp, (MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1), "tmp:");
 
-    // printElement(sk.O,
-    //          MAYO_2_v * MAYO_2_o,
-    //          "O After mayo_expand_sk:");
+    uint64_t *P1 = sk.p;
+    uint64_t *L = P1 + P1_LIMBS_MAX;
+    uint64_t Mtmp[MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs] = {0};
 
-//   printElement((unsigned char *)sk.p,
-//              P1_LIMBS_MAX * sizeof(uint64_t),
-//              "P1 after mayo_expand_sk:");
+    for (int i = 0; i < MAYO_2_salt_bytes; i++) {
+        h_tmp[MAYO_2_digest_bytes + i] = 1;
+    }
+    memcpy(h_tmp + MAYO_2_digest_bytes + MAYO_2_salt_bytes, seed_sk,
+         MAYO_2_sk_seed_bytes);
+    for (int i = 0; i < MAYO_2_sk_seed_bytes; i++) {
+        printf("%02x", h_tmp[MAYO_2_sk_seed_bytes + i]);
+    }
+    printf("\r\n");
 
-//   printElement((unsigned char *)(sk.p + P1_LIMBS_MAX),
-//              P2_LIMBS_MAX * sizeof(uint64_t),
-//              "L/P2 after mayo_expand_sk:");
-//              printf("%d %d\r\n",P2_LIMBS_MAX, P1_LIMBS_MAX);
+
+    printElement(h_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes, "tmp:");
+    printf("\r\n");
+    printf("%d\r\n",MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes);
+    printf("\r\n");
+
+    cudaMemcpy(d_tmp, h_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes, cudaMemcpyHostToDevice);
+    shake256<<<1,25>>>(d_salt, MAYO_2_salt_bytes, d_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes);
+    cudaMemcpy(h_salt, d_salt, MAYO_2_salt_bytes, cudaMemcpyDeviceToHost);
+ 
+    printElement(h_salt, MAYO_2_salt_bytes, "Salt:");
+    printf("\r\n");
+    printf("%d\r\n",MAYO_2_salt_bytes);
+    printf("\r\n");
+    // shake256(salt, param_salt_bytes, tmp,
+    //        param_digest_bytes + param_salt_bytes + param_sk_seed_bytes);
+
     
 
     return ret;
