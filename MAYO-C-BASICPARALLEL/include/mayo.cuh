@@ -8,12 +8,15 @@
 #include "fips202.cuh"
 #include "aes_c.h"
 #include "arithmetic.cuh"
+#include <cuda_runtime.h>
 
 /**
  * Status codes
  */
 #define MAYO_OK 0
 #define MAYO_ERR 1
+
+#define THREADS (256)
 
 
 /*

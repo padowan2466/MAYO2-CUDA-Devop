@@ -10,8 +10,12 @@
 #include <stdalign.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <sys/types.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #ifdef ENABLE_CT_TESTING
 #include <valgrind/memcheck.h>
 #endif
@@ -40,6 +44,7 @@ void printElement(unsigned char* element, int n, char* title)
   }
   printf("\r\n");
 }
+
 
 static void encode(const unsigned char *m, unsigned char *menc, int mlen) {
   int i;
@@ -419,8 +424,16 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
   const int param_digest_bytes = PARAM_digest_bytes(p);
   const int param_sk_seed_bytes = PARAM_sk_seed_bytes(p);
   const int param_salt_bytes = PARAM_salt_bytes(p);
+  struct timeval t1, t2;
+  double cpu_t;
 
+  gettimeofday(&t1, NULL);
   ret = mayo_expand_sk(p, csk, &sk);
+  gettimeofday(&t2, NULL);
+  cpu_t = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
+  cpu_t += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
+  printf("sumArraysOnHost Time elapsed %.6f ms\n", cpu_t);
+
   if (ret != MAYO_OK) {
     goto err;
   }
@@ -432,10 +445,10 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
   //            PARAM_P1_limbs(p) * sizeof(uint64_t),
   //            "P1 after mayo_expand_sk:");
 
-  printElement((unsigned char *)(sk.p + PARAM_P1_limbs(p)),
-             PARAM_P2_limbs(p) * sizeof(uint64_t),
-             "L/P2 after mayo_expand_sk:");
-  printf("%d %d\r\n",PARAM_P2_limbs(p), PARAM_P1_limbs(p));
+  // printElement((unsigned char *)(sk.p + PARAM_P1_limbs(p)),
+  //            PARAM_P2_limbs(p) * sizeof(uint64_t),
+  //            "L/P2 after mayo_expand_sk:");
+  // printf("%d %d\r\n",PARAM_P2_limbs(p), PARAM_P1_limbs(p));
   seed_sk = csk;
 
   printf("\nmsg\n");
