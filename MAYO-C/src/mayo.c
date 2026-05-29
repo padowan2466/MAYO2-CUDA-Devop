@@ -501,17 +501,17 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
   for (int i = 0; i < param_sk_seed_bytes; i++) {
     printf("%02x", tmp[param_digest_bytes + i]);
   }
-  printf("\n");
-  printElement(tmp, param_digest_bytes + param_salt_bytes + param_sk_seed_bytes, "tmp:");
   printf("\r\n");
-  printf("%d\r\n",param_digest_bytes + param_salt_bytes + param_sk_seed_bytes);
-  printf("\r\n");
+  // printElement(tmp, param_digest_bytes + param_salt_bytes + param_sk_seed_bytes, "tmp:");
+  // printf("\r\n");
+  // printf("%d\r\n",param_digest_bytes + param_salt_bytes + param_sk_seed_bytes);
+  // printf("\r\n");
   shake256(salt, param_salt_bytes, tmp,
            param_digest_bytes + param_salt_bytes + param_sk_seed_bytes);
-  printElement(salt, param_salt_bytes, "Salt:");
-  printf("\r\n");
-  printf("%d\r\n",param_salt_bytes);
-  printf("\r\n");
+  // printElement(salt, param_salt_bytes, "Salt:");
+  // printf("\r\n");
+  // printf("%d\r\n",param_salt_bytes);
+  // printf("\r\n");
 #ifdef ENABLE_CT_TESTING
   VALGRIND_MAKE_MEM_DEFINED(salt, SALT_BYTES_MAX); // Salt is not secret
 #endif
@@ -521,8 +521,11 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
   ctrbyte = tmp + param_digest_bytes + param_salt_bytes + param_sk_seed_bytes;
 
   shake256(tenc, param_m_bytes, tmp, param_digest_bytes + param_salt_bytes);
+  // printElement(tenc, param_m_bytes, "Tenc:");
+
 
   decode(tenc, t, param_m); // may not be necessary
+  printElement(t, param_m, "t:");
 
   for (int ctr = 0; ctr <= 255; ++ctr) {
     *ctrbyte = (unsigned char)ctr;

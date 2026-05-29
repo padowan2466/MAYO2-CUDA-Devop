@@ -10,7 +10,7 @@ int mayo2_sign_signature(unsigned char *sig,
 int mayo_expand_sk(const unsigned char *csk, sk_t *sk);
 
 
-__global__ void decode(const unsigned char *m, unsigned char *mdec, int *mdeclen);
+__global__ void decode(const unsigned char *m, unsigned char *mdec, int mdeclen);
 
 __global__ void unpack_m_vecs(const unsigned char *in,
                                      uint64_t *out,
@@ -74,12 +74,22 @@ int mayo2_sign_signature(unsigned char *sig,
 
     unsigned char *h_salt, *d_salt;//[SALT_BYTES_MAX];
 
+    unsigned char *ctrbyte;
+
+    unsigned char *h_tenc, *d_tenc;
+
+    unsigned char *h_t, *d_t;
+
     cudaMallocHost((void**)&h_tmp,MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1);
     cudaMallocHost((void**)&h_salt, MAYO_2_salt_bytes);
+    cudaMallocHost((void**)&h_tenc, MAYO_2_m_bytes);
+    cudaMallocHost((void**)&h_t, MAYO_2_m);
 
     cudaMalloc((void**)&d_tmp,MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1);
     cudaMalloc((void**)&d_m, mlen);
     cudaMalloc((void**)&d_salt, MAYO_2_salt_bytes);
+    cudaMalloc((void**)&d_tenc, MAYO_2_m_bytes);
+    cudaMalloc((void**)&d_t, MAYO_2_m);
 
     alignas(32) sk_t sk;
     ret = mayo_expand_sk(csk, &sk);
@@ -119,23 +129,59 @@ int mayo2_sign_signature(unsigned char *sig,
     printf("\r\n");
 
 
-    printElement(h_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes, "tmp:");
-    printf("\r\n");
-    printf("%d\r\n",MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes);
-    printf("\r\n");
+    // printElement(h_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes, "tmp:");
+    // printf("\r\n");
+    // printf("%d\r\n",MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes);
+    // printf("\r\n");
 
     cudaMemcpy(d_tmp, h_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes, cudaMemcpyHostToDevice);
     shake256<<<1,25>>>(d_salt, MAYO_2_salt_bytes, d_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes);
     cudaMemcpy(h_salt, d_salt, MAYO_2_salt_bytes, cudaMemcpyDeviceToHost);
  
-    printElement(h_salt, MAYO_2_salt_bytes, "Salt:");
-    printf("\r\n");
-    printf("%d\r\n",MAYO_2_salt_bytes);
-    printf("\r\n");
-    // shake256(salt, param_salt_bytes, tmp,
-    //        param_digest_bytes + param_salt_bytes + param_sk_seed_bytes);
+    // printElement(h_salt, MAYO_2_salt_bytes, "Salt:");
+    // printf("\r\n");
+    // printf("%d\r\n",MAYO_2_salt_bytes);
+    // printf("\r\n");
+    memcpy(h_tmp + MAYO_2_digest_bytes, h_salt, MAYO_2_salt_bytes);
+    ctrbyte = h_tmp + MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes;
+    cudaMemcpy(d_tmp, h_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes, cudaMemcpyHostToDevice);
+    shake256<<<1,25>>>(d_tenc, MAYO_2_m_bytes, d_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes);
+    // cudaMemcpy(h_tenc, d_tenc, MAYO_2_m_bytes, cudaMemcpyDeviceToHost);
+    // printElement(h_tenc, MAYO_2_m_bytes, "Tenc:");
 
-    
+    int blocks = (((MAYO_2_m  + 1)/2) + THREADS-1)/THREADS;
+    decode<<<blocks, THREADS>>>(d_tenc, d_t, MAYO_2_m);
+    cudaMemcpy(h_t, d_t, MAYO_2_m, cudaMemcpyDeviceToHost);
+    printElement(h_t, MAYO_2_m, "t:");
+
+
+
+    // decode(tenc, t, param_m); // may not be necessary
+
+
+//   shake256(tenc, param_m_bytes, tmp, param_digest_bytes + param_salt_bytes);
+
+//    cudaMallocHost((void**)&h_tmp,MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1);
+//     cudaMallocHost((void**)&h_salt, MAYO_2_salt_bytes);
+//     cudaMallocHost((void**)&h_tenc, MAYO_2_m_bytes);
+//     cudaMallocHost((void**)&h_t, MAYO_2_m);
+
+    cudaFreeHost(h_tmp);
+    cudaFreeHost(h_salt);
+    cudaFreeHost(h_tenc);
+    cudaFreeHost(h_t);
+
+//     cudaMalloc((void**)&d_tmp,MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1);
+//     cudaMalloc((void**)&d_m, mlen);
+//     cudaMalloc((void**)&d_salt, MAYO_2_salt_bytes);
+//     cudaMalloc((void**)&d_tenc, MAYO_2_m_bytes);
+//     cudaMalloc((void**)&d_t, MAYO_2_m);  
+    cudaFree(d_tmp);
+    cudaFree(d_m);
+    cudaFree(d_salt);
+    cudaFree(d_tenc);
+    cudaFree(d_t);
+
 
     return ret;
 
@@ -153,8 +199,7 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
 
     unsigned char *h_O = sk->O;
     unsigned char *d_O;
-    int *h_mdeclen;
-    int *d_mdeclen;
+    int mdeclen;
 
     uint64_t *h_P = sk->p;
     unsigned char *h_seed_pk;
@@ -182,9 +227,7 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
     cudaMalloc((void**)&d_seed_sk, MAYO_2_sk_seed_bytes * sizeof(uint8_t));
 
     /* DECODE */
-    cudaMallocHost((void**)&h_mdeclen, sizeof(int));
     cudaMalloc((void**)&d_O, MAYO_2_v * MAYO_2_o * sizeof(unsigned char));
-    cudaMalloc((void**)&d_mdeclen, sizeof(int));
 
     /* Expand P1P2 */
     cudaMallocHost((void**)&h_vecs, sizeof(int));
@@ -208,8 +251,7 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
     }
     cudaMemcpy(d_seed_sk, h_seed_sk, MAYO_2_sk_seed_bytes, cudaMemcpyHostToDevice);
 
-    *h_mdeclen = MAYO_2_v * MAYO_2_o;
-    cudaMemcpy(d_mdeclen, h_mdeclen, sizeof(int), cudaMemcpyHostToDevice);
+    mdeclen = MAYO_2_v * MAYO_2_o;
    
 
     float gpu_t; 
@@ -224,7 +266,7 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
     /************************************************/
     
     /***************** DECODE ***********************/
-    decode<<<blocks, THREADS>>>(d_S + MAYO_2_pk_seed_bytes, d_O, d_mdeclen);
+    decode<<<blocks, THREADS>>>(d_S + MAYO_2_pk_seed_bytes, d_O, mdeclen);
     cudaMemcpy(h_O, d_O, MAYO_2_v * MAYO_2_o * sizeof(unsigned char), cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
     /************************************************ */
@@ -287,14 +329,12 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
 
     cudaFree(d_S);
     cudaFree(d_seed_sk);
-    cudaFree(d_mdeclen);
     cudaFree(d_O);
     cudaFree(d_P_bytes);
     cudaFree(d_P_limbs);
 
     cudaFreeHost(h_S);
     cudaFreeHost(h_seed_sk);
-    cudaFreeHost(h_mdeclen);
     cudaFreeHost(h_O);
 
     // cudaFreeHost(h_P2_tmp);
@@ -302,11 +342,11 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
     return ret;
 }
 
-__global__ void decode(const unsigned char *m, unsigned char *mdec, int *mdeclen)
+__global__ void decode(const unsigned char *m, unsigned char *mdec, int mdeclen)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    int nBytes = (*mdeclen + 1)/2;
+    int nBytes = (mdeclen + 1)/2;
 
     if (idx < nBytes) {
         unsigned char byte = m[idx];
@@ -314,11 +354,11 @@ __global__ void decode(const unsigned char *m, unsigned char *mdec, int *mdeclen
         int out0 = 2 * idx;
         int out1 = 2 * idx + 1;
 
-        if (out0 < *mdeclen) {
+        if (out0 < mdeclen) {
             mdec[out0] = byte & 0x0F;
         }
 
-        if (out1 < *mdeclen) {
+        if (out1 < mdeclen) {
             mdec[out1] = byte >> 4;
         }
     }
