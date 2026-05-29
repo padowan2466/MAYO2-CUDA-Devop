@@ -61,8 +61,45 @@ int mayo2_sign_signature(unsigned char *sig,
               size_t mlen, const unsigned char *csk)
 {
     int ret = MAYO_OK;
+
+    float gpu_t; 
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    const unsigned char *seed_sk;
+
+    unsigned char *h_tmp, *d_tmp;//[DIGEST_BYTES_MAX + SALT_BYTES_MAX + SK_SEED_BYTES_MAX + 1];
+    unsigned char *d_m;
+
+    cudaMallocHost((void**)&h_tmp,(MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*sizeof(unsigned char));
+
+    cudaMalloc((void**)&d_tmp,(MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*sizeof(unsigned char));
+    cudaMalloc((void**)&d_m, mlen);
+
     alignas(32) sk_t sk;
     ret = mayo_expand_sk(csk, &sk);
+
+    seed_sk = csk;
+
+    printf("\nmsg\n");
+    for (size_t i = 0; i < mlen; i++) {
+    printf("0x%02x, ", m[i]);
+    }
+    printf("\r\n");
+
+    cudaMemcpy(d_m, m,  mlen, cudaMemcpyHostToDevice);
+
+    cudaEventRecord(start);
+    shake256<<<1,25>>>(d_tmp, MAYO_2_digest_bytes, d_m, mlen);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&gpu_t, start, stop);    
+    printf("Time elapsed %.6f ms\n", gpu_t);
+    cudaMemcpy(h_tmp, d_tmp,  MAYO_2_digest_bytes, cudaMemcpyDeviceToHost);
+
+    printElement(h_tmp, (MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1), "tmp:");
+
     // printElement(sk.O,
     //          MAYO_2_v * MAYO_2_o,
     //          "O After mayo_expand_sk:");

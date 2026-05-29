@@ -456,7 +456,12 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
     printf("0x%02x, ", m[i]);
   }
   // hash message
+  gettimeofday(&t1, NULL);
   shake256(tmp, param_digest_bytes, m, mlen);
+  gettimeofday(&t2, NULL);
+  cpu_t = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
+  cpu_t += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
+  printf("sumArraysOnHost Time elapsed %.6f ms\n", cpu_t);
   printf("\ntmp %u \n", DIGEST_BYTES_MAX + SALT_BYTES_MAX + SK_SEED_BYTES_MAX + 1);
   for (int i = 0; i < DIGEST_BYTES_MAX + SALT_BYTES_MAX + SK_SEED_BYTES_MAX + 1;
        i++) {
