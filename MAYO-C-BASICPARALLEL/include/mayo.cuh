@@ -19,6 +19,9 @@
 #define THREADS (256)
 
 
+#define BATCH (5U)
+
+
 /*
  MAYO2 - PARAMETERS
 */

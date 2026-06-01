@@ -35,14 +35,15 @@ static void decode(const unsigned char *m, unsigned char *mdec, int mdeclen) {
   }
 }
 
-void printElement(unsigned char* element, int n, char* title)
+void printElement(unsigned char* element, int n, const char* title)
 {
+  printf("\r\n");
   printf("%s\r\n",title);
   for(int i = 0; i < n; i++)
   {
     printf("%02x, ",element[i]);
   }
-  printf("\r\n");
+  printf("\r\n\n");
 }
 
 
@@ -525,7 +526,12 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
 
 
   decode(tenc, t, param_m); // may not be necessary
-  printElement(t, param_m, "t:");
+  // printElement(t, param_m, "t:");
+
+  /***** TEST ***********/
+  shake256(V, param_k * param_v_bytes + param_r_bytes, tmp,
+             param_digest_bytes + param_salt_bytes + param_sk_seed_bytes + 1);
+  printElement(V, param_k * param_v_bytes + param_r_bytes, "V:");
 
   for (int ctr = 0; ctr <= 255; ++ctr) {
     *ctrbyte = (unsigned char)ctr;
