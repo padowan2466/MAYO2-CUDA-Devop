@@ -430,6 +430,16 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
 
   gettimeofday(&t1, NULL);
   ret = mayo_expand_sk(p, csk, &sk);
+  printf("O first: %02x\r\n", sk.O[0]);
+  printf("O last : %02x\r\n", sk.O[PARAM_v(p) * PARAM_o(p) - 1]);
+
+  printf("p first: %016llx\r\n",
+        (unsigned long long)sk.p[0]);
+
+  printf("p last : %016llx\r\n",
+        (unsigned long long)sk.p[PARAM_P1_limbs(p) + PARAM_P2_limbs(p) - 1]);
+
+  printf("\r\n");
   gettimeofday(&t2, NULL);
   cpu_t = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
   cpu_t += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms

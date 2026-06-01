@@ -10,11 +10,14 @@ int mayo2_sign_signature(unsigned char *sig,
 int mayo_expand_sk(const unsigned char *csk, sk_t *sk);
 
 
-__global__ void decode(const unsigned char *m, unsigned char *mdec, int mdeclen);
+__global__ void decode(const unsigned char *m,
+                             unsigned char *mdec,
+                             int mdeclen,
+                             int blocks_per_sig);
 
 __global__ void unpack_m_vecs(const unsigned char *in,
-                                     uint64_t *out,
-                                     int *vecs);
+                              uint64_t *out,
+                              int total_vecs);
 
 
 __global__ void P1P1t_times_O(const uint64_t* __restrict__ P1,
@@ -48,6 +51,34 @@ void printBatch(unsigned char* element, int n, int nBatch, const char* title)
     {
         printf("Batch %d\r\n", i);
         printElement(element + i*n, n, title);
+    }
+}
+
+void printFirstAndLast(unsigned char* element, int n, int nBatch, const char* title)
+{   
+    printf("%s\r\n", title);
+    for(int i = 0;  i<nBatch;  i++)
+    {
+        printf("Batch %d\r\n", i);
+        printf("First: %02x\r\n",*(element + i*n));
+        printf("First: %02x\r\n",*(element + (i+1)*n - 1));
+    }
+}
+
+void print_sk_batch_first_last(sk_t *sk, int nBatch)
+{
+    for (int i = 0; i < nBatch; i++)
+    {
+        printf("Batch %d\r\n", i);
+
+        printf("O first: %02x\r\n", sk[i].O[0]);
+        printf("O last : %02x\r\n", sk[i].O[MAYO_2_v * MAYO_2_o - 1]);
+
+        printf("p first: %02llx\r\n", (unsigned long long)sk[i].p[0]);
+        printf("p last : %02llx\r\n",
+               (unsigned long long)sk[i].p[P1_LIMBS_MAX + P2_LIMBS_MAX - 1]);
+
+        printf("\r\n");
     }
 }
 
@@ -107,8 +138,11 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaMalloc((void**)&d_t, MAYO_2_m*BATCH);
     cudaMalloc((void**)&d_V, (MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes)*BATCH);
 
-    alignas(32) sk_t sk;
-    ret = mayo_expand_sk(csk, &sk);
+    alignas(32) sk_t sk[BATCH];
+    ret = mayo_expand_sk(csk, sk);
+    print_sk_batch_first_last(sk, BATCH);
+
+
 
     // seed_sk = csk;
 
@@ -218,17 +252,12 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
     unsigned char *h_S, *h_seed_sk;
     unsigned char *d_S, *d_seed_sk;
 
-    int blocks = ((((MAYO_2_o * MAYO_2_v) + 1)/2) + THREADS-1)/THREADS;
 
-    unsigned char *h_O = sk->O;
+    unsigned char *h_O; //= sk->O;
     unsigned char *d_O;
     int mdeclen;
 
-    uint64_t *h_P = sk->p;
-    unsigned char *h_seed_pk;
-    int *h_vecs;
-    uint64_t *d_P;
-    int *d_vecs;
+    uint64_t *h_P; //= sk->p;
 
     const int m_vec_limbs = MAYO_2_m_vec_limbs;
 
@@ -250,19 +279,18 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
     cudaMalloc((void**)&d_seed_sk, MAYO_2_sk_seed_bytes * sizeof(uint8_t)*BATCH);
 
     /* DECODE */
+    cudaMallocHost((void**)&h_O, MAYO_2_v * MAYO_2_o * sizeof(unsigned char)*BATCH);
     cudaMalloc((void**)&d_O, MAYO_2_v * MAYO_2_o * sizeof(unsigned char)*BATCH);
 
     /* Expand P1P2 */
-    cudaMallocHost((void**)&h_vecs, sizeof(int)*BATCH);
-    cudaMalloc((void**)&d_P, (P1_LIMBS_MAX + P2_LIMBS_MAX)*sizeof(uint64_t)*BATCH);
-    cudaMalloc((void**)&d_vecs, sizeof(int)*BATCH);
+    cudaMallocHost((void**)&h_P, unpacked_bytes * BATCH);
+
 
 
     cudaMalloc((void**)&d_P_bytes, packed_bytes*BATCH);
     cudaMalloc((void**)&d_P_limbs, unpacked_bytes*BATCH);
 
     int threadsPerBlock = THREADS;
-    int total_bytes = total_vecs * (MAYO_2_m_vec_limbs * sizeof(uint64_t));
 
 
 
@@ -287,63 +315,100 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
     /***************** SHAKE256 **********************/
     shake256<<<BATCH,25>>>(d_S, MAYO_2_pk_seed_bytes + MAYO_2_O_bytes,  d_seed_sk, MAYO_2_sk_seed_bytes);
     cudaMemcpy(h_S, d_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes)*BATCH, cudaMemcpyDeviceToHost);
-    h_seed_pk = h_S;
-    printBatch(h_S, MAYO_2_pk_seed_bytes + MAYO_2_O_bytes, BATCH, "S:");
     /************************************************/
     
     /***************** DECODE ***********************/
-    // decode<<<blocks, THREADS>>>(d_S + MAYO_2_pk_seed_bytes, d_O, mdeclen);
-    // cudaMemcpy(h_O, d_O, MAYO_2_v * MAYO_2_o * sizeof(unsigned char), cudaMemcpyDeviceToHost);
-    // cudaDeviceSynchronize();
+    int in_bytes_per_sig = (mdeclen + 1) / 2;
+    int blocks_per_sig = (in_bytes_per_sig + THREADS - 1) / THREADS;
+    decode<<<blocks_per_sig * BATCH, THREADS>>>(
+        d_S + MAYO_2_pk_seed_bytes,
+        d_O,
+        mdeclen,
+        blocks_per_sig
+    );
+
+    cudaDeviceSynchronize();
+
+    cudaMemcpy(h_O,
+            d_O,
+            MAYO_2_v * MAYO_2_o * sizeof(unsigned char) * BATCH,
+            cudaMemcpyDeviceToHost);
     // /************************************************ */
 
     // /******************* Expand P1 P2 **************************/
-    // AES_128_CTR((unsigned char *)h_P,
-    //             packed_bytes,
-    //             h_seed_pk,
-    //             MAYO_2_pk_seed_bytes);
+    for (int i = 0; i < BATCH; i++)
+    {
+        AES_128_CTR((unsigned char *)h_P + i * packed_bytes,
+                    packed_bytes,
+                    h_S + i * (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes),
+                    MAYO_2_pk_seed_bytes);
+    }
+    // printBatch((unsigned char*)h_P, packed_bytes, BATCH, "P:");
+    // printFirstAndLast((unsigned char*)h_P, packed_bytes, BATCH, "P:");
 
-    // cudaMemcpy(d_P_bytes,
-    //         (unsigned char *)h_P,
-    //         packed_bytes,
-    //         cudaMemcpyHostToDevice);
+    cudaMemcpy(d_P_bytes,
+           (unsigned char *)h_P,
+           packed_bytes * BATCH,
+           cudaMemcpyHostToDevice);
 
-    // *h_vecs = total_vecs;
-    // cudaMemcpy(d_vecs, h_vecs, sizeof(int), cudaMemcpyHostToDevice);
+    int total_bytes_all =
+        BATCH * total_vecs * MAYO_2_m_vec_limbs * sizeof(uint64_t);
 
-    // blocks = (total_bytes + threadsPerBlock - 1) / threadsPerBlock;
+    int blocks_unpack =
+        (total_bytes_all + threadsPerBlock - 1) / threadsPerBlock;
 
-    // unpack_m_vecs<<<blocks, threadsPerBlock>>>(
-    //     d_P_bytes,
-    //     d_P_limbs,
-    //     d_vecs
-    // );
-    // cudaDeviceSynchronize();
+    unpack_m_vecs<<<blocks_unpack, threadsPerBlock>>>(
+        d_P_bytes,
+        d_P_limbs,
+        total_vecs
+    );
+    // cudaMemcpy(h_P_limbs, d_P_limbs, unpacked_bytes*BATCH, cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
+    // printFirstAndLast((unsigned char *)h_P_limbs, unpacked_bytes, BATCH, "P_limbs:");
+
 
     // /**********************************************************/
 
 
     // /******************** P1P1t_times_O *************************/
-    // // compute L_i = (P1 + P1^t)*O + P2
-    // blocks = ((MAYO_2_v * MAYO_2_o) + 511) / 512;
+    // compute L_i = (P1 + P1^t)*O + P2
+    int total_outputs = BATCH * MAYO_2_v * MAYO_2_o;
+
+    int blocks_P1P1t =
+        (total_outputs + THREADS - 1) / THREADS;
 
 
-    // P1P1t_times_O<<<blocks, THREADS>>>(
-    // d_P_limbs,                  /* P1 */
-    // d_O,
-    // d_P_limbs + P1_LIMBS_MAX    /* P2 */
-    // );
+    int p1_limbs = p1_vecs * MAYO_2_m_vec_limbs;
+
+    P1P1t_times_O<<<blocks_P1P1t, THREADS>>>(
+        d_P_limbs,
+        d_O,
+        d_P_limbs + p1_limbs
+    );
+
     
-    // cudaDeviceSynchronize();
+    cudaDeviceSynchronize();
     
-    // cudaMemcpy(h_P,
-    //        d_P_limbs,
-    //        (P1_LIMBS_MAX + P2_LIMBS_MAX) * sizeof(uint64_t),
-    //        cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_P,
+           d_P_limbs,
+           unpacked_bytes * BATCH,
+           cudaMemcpyDeviceToHost);
+    
 
     // /*********************************************************/
 
-    // mayo_secure_clear(h_S,MAYO_2_pk_seed_bytes + MAYO_2_O_bytes);
+    mayo_secure_clear(h_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes) * BATCH);
+
+    for (int i = 0; i < BATCH; i++)
+    {
+        memcpy(sk[i].O,
+            h_O + i * (MAYO_2_v * MAYO_2_o),
+            MAYO_2_v * MAYO_2_o * sizeof(unsigned char));
+
+        memcpy(sk[i].p,
+            (unsigned char *)h_P + i * unpacked_bytes,
+            unpacked_bytes);
+    }
 
     // cudaEventRecord(stop);
     // cudaEventSynchronize(stop);
@@ -362,31 +427,46 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
     cudaFreeHost(h_S);
     cudaFreeHost(h_seed_sk);
     cudaFreeHost(h_O);
+    cudaFreeHost(h_P);
 
     // cudaFreeHost(h_P2_tmp);
 
     return ret;
 }
 
-__global__ void decode(const unsigned char *m, unsigned char *mdec, int mdeclen)
+__global__ void decode(const unsigned char *m,
+                       unsigned char *mdec,
+                       int mdeclen,
+                       int blocks_per_sig)
 {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int sig_id = blockIdx.x / blocks_per_sig;
 
-    int nBytes = (mdeclen + 1)/2;
+    int local_block = blockIdx.x % blocks_per_sig;
+    int local_idx = local_block * blockDim.x + threadIdx.x;
 
-    if (idx < nBytes) {
-        unsigned char byte = m[idx];
+    int packed_bytes = (mdeclen + 1) / 2;
 
-        int out0 = 2 * idx;
-        int out1 = 2 * idx + 1;
+    if (local_idx >= packed_bytes) {
+        return;
+    }
 
-        if (out0 < mdeclen) {
-            mdec[out0] = byte & 0x0F;
-        }
+    const unsigned char *m_sig =
+        m + sig_id * (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes);
 
-        if (out1 < mdeclen) {
-            mdec[out1] = byte >> 4;
-        }
+    unsigned char *mdec_sig =
+        mdec + sig_id * mdeclen;
+
+    unsigned char byte = m_sig[local_idx];
+
+    int out0 = 2 * local_idx;
+    int out1 = 2 * local_idx + 1;
+
+    if (out0 < mdeclen) {
+        mdec_sig[out0] = byte & 0x0F;
+    }
+
+    if (out1 < mdeclen) {
+        mdec_sig[out1] = byte >> 4;
     }
 }
 
@@ -394,50 +474,77 @@ __global__ void decode(const unsigned char *m, unsigned char *mdec, int mdeclen)
 
 __global__ void unpack_m_vecs(const unsigned char *in,
                               uint64_t *out,
-                              int *vecs)
+                              int total_vecs)
 {
     int m_vec_limbs = (MAYO_2_m + 15) / 16;
 
-    int in_bytes_per_vec  = MAYO_2_m/ 2;
+    int in_bytes_per_vec  = MAYO_2_m / 2;
     int out_bytes_per_vec = m_vec_limbs * sizeof(uint64_t);
+
+    int in_bytes_per_sig  = total_vecs * in_bytes_per_vec;
+    int out_bytes_per_sig = total_vecs * out_bytes_per_vec;
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    int total_bytes = *vecs * out_bytes_per_vec;
+    int total_bytes = BATCH * out_bytes_per_sig;
 
-    if (tid < total_bytes) 
-    {
-        int vec_index = tid / out_bytes_per_vec;
-        int byte_index = tid % out_bytes_per_vec;
+    if (tid >= total_bytes) {
+        return;
+    }
 
-        unsigned char *out_bytes = (unsigned char *)out;
+    int sig_id = tid / out_bytes_per_sig;
+    int local_tid = tid % out_bytes_per_sig;
 
-        if (byte_index < in_bytes_per_vec) 
-        {
-            out_bytes[vec_index * out_bytes_per_vec + byte_index] = in[vec_index * in_bytes_per_vec + byte_index];
-        } 
-        else 
-        {
-            out_bytes[vec_index * out_bytes_per_vec + byte_index] = 0;
-        }
+    int vec_index = local_tid / out_bytes_per_vec;
+    int byte_index = local_tid % out_bytes_per_vec;
+
+    unsigned char *out_bytes = (unsigned char *)out;
+
+    if (byte_index < in_bytes_per_vec) {
+        out_bytes[sig_id * out_bytes_per_sig +
+                  vec_index * out_bytes_per_vec +
+                  byte_index] =
+            in[sig_id * in_bytes_per_sig +
+               vec_index * in_bytes_per_vec +
+               byte_index];
+    } else {
+        out_bytes[sig_id * out_bytes_per_sig +
+                  vec_index * out_bytes_per_vec +
+                  byte_index] = 0;
     }
 }
 
 __global__
 void P1P1t_times_O(const uint64_t* __restrict__ P1,
-                          const unsigned char* __restrict__ O,
-                          uint64_t* __restrict__ acc)
+                   const unsigned char* __restrict__ O,
+                   uint64_t* __restrict__ acc)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-    int total_outputs = MAYO_2_v * MAYO_2_o;
+    int outputs_per_sig = MAYO_2_v * MAYO_2_o;
+    int total_outputs = BATCH * outputs_per_sig;
 
     if (tid >= total_outputs) {
         return;
     }
 
-    int row = tid / MAYO_2_o;
-    int k   = tid % MAYO_2_o;
+    int sig_id = tid / outputs_per_sig;
+    int local_tid = tid % outputs_per_sig;
+
+    int row = local_tid / MAYO_2_o;
+    int k   = local_tid % MAYO_2_o;
+
+    int p_limbs_per_sig = P1_LIMBS_MAX + P2_LIMBS_MAX;
+    int o_bytes_per_sig = MAYO_2_v * MAYO_2_o;
+
+    const uint64_t *P1_sig =
+        P1 + sig_id * p_limbs_per_sig;
+
+    const unsigned char *O_sig =
+        O + sig_id * o_bytes_per_sig;
+
+    uint64_t *acc_sig =
+        acc + sig_id * p_limbs_per_sig;
 
     uint64_t local[M_VEC_LIMBS_MAX];
 
@@ -464,16 +571,18 @@ void P1P1t_times_O(const uint64_t* __restrict__ P1,
 
         int p1_index = upper_triangular_index(r, c, MAYO_2_v);
 
-        const uint64_t* P1_entry = P1 + p1_index * MAYO_2_m_vec_limbs;
+        const uint64_t *P1_entry =
+            P1_sig + p1_index * MAYO_2_m_vec_limbs;
 
-        uint8_t a = O[col * MAYO_2_o + k];
+        uint8_t a = O_sig[col * MAYO_2_o + k];
 
         for (int i = 0; i < MAYO_2_m_vec_limbs; i++) {
             local[i] ^= gf16_vec_mul(P1_entry[i], a);
         }
     }
 
-    uint64_t* acc_entry = acc + (row * MAYO_2_o + k) * MAYO_2_m_vec_limbs;
+    uint64_t *acc_entry =
+        acc_sig + (row * MAYO_2_o + k) * MAYO_2_m_vec_limbs;
 
     for (int i = 0; i < MAYO_2_m_vec_limbs; i++) {
         acc_entry[i] ^= local[i];
