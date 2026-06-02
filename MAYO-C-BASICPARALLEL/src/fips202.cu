@@ -119,8 +119,9 @@ __global__ void shake128(uint8_t *output, size_t outlen, const uint8_t *input,
                          size_t inlen);
 
 /* One-stop SHAKE256 call */
-__global__ void shake256(uint8_t *output, size_t outlen, const uint8_t *input,
-                         size_t inlen);
+__global__ void shake256(uint8_t *output, size_t outlen,
+                         const uint8_t *input, size_t inlen,
+                         size_t input_stride);
 
 /* Initialize the incremental hashing state */
 __host__ __device__ void sha3_256_inc_init(sha3_256incctx *state);
@@ -879,21 +880,30 @@ __device__ void shake256_gpu(uint64_t *A) {
   }
 }
 
-__global__ void shake256(uint8_t *output, size_t outlen, const uint8_t *input,
-                         size_t inlen) {
-  int id = blockIdx.x;   // Instance ID
-  int tid = threadIdx.x; // Thread ID within instance (0-24)
+__global__ void shake256(uint8_t *output, size_t outlen,
+                         const uint8_t *input, size_t inlen,
+                         size_t input_stride)
+{
+    int id = blockIdx.x;
+    int tid = threadIdx.x;
 
-  output += id * outlen;
-  input += id * inlen;
+    if (input_stride == 0)
+    {
+        input_stride = inlen;
+    }
 
-  __shared__ uint64_t state[25];
-  __shared__ uint8_t t[SHAKE256_RATE];
+    output += id * outlen;
+    input  += id * input_stride;
 
-  // Zero state
-  if (tid < 25)
-    state[tid] = 0;
-  __syncthreads();
+    __shared__ uint64_t state[25];
+    __shared__ uint8_t t[SHAKE256_RATE];
+
+    if (tid < 25)
+    {
+        state[tid] = 0;
+    }
+
+    __syncthreads();
 
   // Absorb
   // This is a simplified collaborative absorb for short inputs

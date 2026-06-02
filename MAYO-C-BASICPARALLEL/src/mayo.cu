@@ -169,7 +169,7 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaMemcpy(d_m, h_msg,  mlen*BATCH, cudaMemcpyHostToDevice);
 
     // cudaEventRecord(start);
-    shake256<<<BATCH,25>>>(d_tmp, MAYO_2_digest_bytes, d_m, mlen);
+    shake256<<<BATCH,25>>>(d_tmp, MAYO_2_digest_bytes, d_m, mlen, 0);
 
 
     cudaMemcpy(h_digest,
@@ -206,6 +206,14 @@ int mayo2_sign_signature(unsigned char *sig,
     }
 
     printBatch(h_tmp, tmp_bytes, BATCH, "tmp:");
+
+    cudaMemcpy(d_tmp, h_tmp, (MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*BATCH, cudaMemcpyHostToDevice);
+ 
+    shake256<<<BATCH, 25>>>(d_salt, MAYO_2_salt_bytes, d_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes,
+                            MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1);
+
+    cudaMemcpy(h_salt, d_salt, MAYO_2_salt_bytes*BATCH, cudaMemcpyDeviceToHost);
+    printBatch(h_salt, MAYO_2_salt_bytes, BATCH, "Salt:");
 
 
     // printElement(h_tmp, (MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1), "tmp:");
@@ -361,7 +369,7 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
     cudaEventCreate(&stop);
     cudaEventRecord(start);
     /***************** SHAKE256 **********************/
-    shake256<<<BATCH,25>>>(d_S, MAYO_2_pk_seed_bytes + MAYO_2_O_bytes,  d_seed_sk, MAYO_2_sk_seed_bytes);
+    shake256<<<BATCH,25>>>(d_S, MAYO_2_pk_seed_bytes + MAYO_2_O_bytes,  d_seed_sk, MAYO_2_sk_seed_bytes, 0);
     cudaMemcpy(h_S, d_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes)*BATCH, cudaMemcpyDeviceToHost);
     /************************************************/
     

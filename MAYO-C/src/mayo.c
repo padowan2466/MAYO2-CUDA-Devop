@@ -520,7 +520,7 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
   // printf("\r\n");
   shake256(salt, param_salt_bytes, tmp,
            param_digest_bytes + param_salt_bytes + param_sk_seed_bytes);
-  // printElement(salt, param_salt_bytes, "Salt:");
+  printElement(salt, param_salt_bytes, "Salt:");
   // printf("\r\n");
   // printf("%d\r\n",param_salt_bytes);
   // printf("\r\n");
@@ -534,7 +534,6 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
 
   shake256(tenc, param_m_bytes, tmp, param_digest_bytes + param_salt_bytes);
   // printElement(tenc, param_m_bytes, "Tenc:");
-
 
   decode(tenc, t, param_m); // may not be necessary
   // printElement(t, param_m, "t:");

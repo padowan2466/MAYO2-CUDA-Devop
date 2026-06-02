@@ -10,8 +10,9 @@
 
 __global__ void shake128(unsigned char *output, size_t outputByteLen,
                          const unsigned char *input, size_t inputByteLen);
-__global__ void shake256(unsigned char *output, size_t outputByteLen,
-                         const unsigned char *input, size_t inputByteLen);
+__global__ void shake256(uint8_t *output, size_t outlen,
+                         const uint8_t *input, size_t inlen,
+                         size_t input_stride);
 
 #define R64(a, b, c)                                                           \
   (((a) << b) ^ ((a) >> c)) /* works on the GPU also for                       \
