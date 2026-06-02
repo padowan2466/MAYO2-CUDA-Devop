@@ -34,7 +34,18 @@ void mayo_secure_clear(void *mem,
                        size_t size); 
 
 
-
+__global__
+void mul_add_mat_x_m_mat_batch_kernel(int m_vec_limbs,
+                                      const unsigned char *mat,   
+                                      const uint64_t *bs_mat,
+                                      uint64_t *acc,
+                                      int mat_rows,              
+                                      int mat_cols,              
+                                      int bs_mat_cols,            
+                                      int mat_stride,             
+                                      int bs_mat_stride,          
+                                      int acc_stride              
+);
 
 void printElement(unsigned char* element, int n, const char* title)
 {
@@ -132,6 +143,15 @@ int mayo2_sign_signature(unsigned char *sig,
 
     unsigned char *d_Vdec, *h_Vdec;
 
+    uint64_t *d_VL, *h_VL;
+
+    uint64_t *h_P_batch, *d_P_batch;
+    int p1_vecs = MAYO_2_v * (MAYO_2_v + 1) / 2;
+    int p2_vecs = MAYO_2_v * MAYO_2_o;
+    int p1_limbs = p1_vecs * MAYO_2_m_vec_limbs;
+    int p2_limbs = p2_vecs * MAYO_2_m_vec_limbs;
+    int p_limbs_per_sig = p1_limbs + p2_limbs;
+
     cudaMallocHost((void**)&h_msg, mlen*BATCH);
     cudaMallocHost((void**)&h_tmp,(MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*BATCH);
     cudaMallocHost((void**)&h_salt, (MAYO_2_salt_bytes)*BATCH);
@@ -140,6 +160,8 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaMallocHost((void**)&h_V, (MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes)*BATCH);
     cudaMallocHost((void**)&h_digest, MAYO_2_digest_bytes * BATCH);
     cudaMallocHost((void**)&h_Vdec, MAYO_2_v*MAYO_2_k*BATCH);
+    cudaMallocHost((void**)&h_VL, MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
+    cudaMallocHost((void **)&h_P_batch, p_limbs_per_sig * sizeof(uint64_t) * BATCH);
 
 
     cudaMalloc((void**)&d_tmp,(MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*BATCH);
@@ -149,11 +171,27 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaMalloc((void**)&d_t, MAYO_2_m*BATCH);
     cudaMalloc((void**)&d_V, (MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes)*BATCH);
     cudaMalloc((void**)&d_Vdec, MAYO_2_v*MAYO_2_k*BATCH);
+    cudaMalloc((void**)&d_VL, MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
+    cudaMalloc((void **)&d_P_batch, p_limbs_per_sig * sizeof(uint64_t) * BATCH);
 
 
     alignas(32) sk_t sk[BATCH];
     ret = mayo_expand_sk(csk, sk);
     // print_sk_batch_first_last(sk, BATCH);
+
+    for (int i = 0; i < BATCH; i++)
+    {
+        memcpy(h_P_batch + i * p_limbs_per_sig,
+               sk[i].p,
+               p_limbs_per_sig * sizeof(uint64_t));
+    }
+
+    cudaMemcpy(d_P_batch,
+               h_P_batch,
+               p_limbs_per_sig * sizeof(uint64_t) * BATCH,
+               cudaMemcpyHostToDevice);
+
+    uint64_t *d_L = d_P_batch + p1_limbs;
 
 
 
@@ -274,91 +312,66 @@ int mayo2_sign_signature(unsigned char *sig,
            Vdec_per_batch * BATCH,
            cudaMemcpyDeviceToHost);
 
-    printBatch(h_Vdec, Vdec_per_batch, BATCH, "Vdec:");
+    // printBatch(h_Vdec, Vdec_per_batch, BATCH, "Vdec:");
 
-    // for (int i = 0; i <= param_k - 1; ++i) {
-    //   decode(V + i * param_v_bytes, Vdec + i * param_v, param_v);
-    // }
+    cudaMemset(d_VL,
+           0,
+           MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
 
+    int VL_limbs_per_batch = MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs;
 
-    // printElement(h_tmp, (MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1), "tmp:");
+    int mat_rows = MAYO_2_k;
+    int mat_cols = MAYO_2_v;
+    int bs_mat_cols = MAYO_2_o;
 
-    // uint64_t *P1 = sk.p;,
-    // uint64_t *L = P1 + P1_LIMBS_MAX;
-    // uint64_t Mtmp[(MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs)*BATCH] = {0};
+    int mat_stride = MAYO_2_k * MAYO_2_v;
+    int bs_mat_stride = p_limbs_per_sig;
+    int acc_stride = VL_limbs_per_batch;
 
-    // for(int j = 0; j<BATCH; j++)
-    // {
-    //     for (int i = 0; i < MAYO_2_salt_bytes; i++) {
-    //         h_tmp[MAYO_2_digest_bytes + i*j] = 1;
-    //     }
-    //     memcpy(h_tmp + MAYO_2_digest_bytes + MAYO_param_digest_bytes + param_salt_bytes + param_sk_seed_bytes + 12_salt_bytes, seed_sk,
-    //      MAYO_2_sk_seed_bytes);
-    // }
+    int total_VL = BATCH * mat_rows * bs_mat_cols * MAYO_2_m_vec_limbs;
+    int blocks_VL = (total_VL + THREADS - 1) / THREADS;
+
+    mul_add_mat_x_m_mat_batch_kernel<<<blocks_VL, THREADS>>>(
+        MAYO_2_m_vec_limbs,
+        d_Vdec,
+        d_L,
+        d_VL,
+        mat_rows,
+        mat_cols,
+        bs_mat_cols,
+        mat_stride,
+        bs_mat_stride,
+        acc_stride
+    );
+
+    cudaDeviceSynchronize();
+
+    cudaMemcpy(h_VL, d_VL, VL_limbs_per_batch * sizeof(uint64_t) * BATCH, cudaMemcpyDeviceToHost);
+
+    printBatch((unsigned char *)h_VL, VL_limbs_per_batch * sizeof(uint64_t), BATCH, "VL:");
+
     
-    
-    // for (int i = 0; i < MAYO_2_sk_seed_bytes; i++) {
-    //     printf("%02x", h_tmp[MAYO_2_sk_seed_bytes + i]);
-    // }
-    // printf("\r\n");
 
-
-    // // printElement(h_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes, "tmp:");
-    // // printf("\r\n");
-    // // printf("%d\r\n",MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes);
-    // // printf("\r\n");
-
-    // cudaMemcpy(d_tmp, h_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes, cudaMemcpyHostToDevice);
-    // shake256<<<1,25>>>(d_salt, MAYO_2_salt_bytes, d_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes);
-    // cudaMemcpy(h_salt, d_salt, MAYO_2_salt_bytes, cudaMemcpyDeviceToHost);
- 
-    // // printElement(h_salt, MAYO_2_salt_bytes, "Salt:");
-    // // printf("\r\n");
-    // // printf("%d\r\n",MAYO_2_salt_bytes);
-    // // printf("\r\n");
-    // memcpy(h_tmp + MAYO_2_digest_bytes, h_salt, MAYO_2_salt_bytes);
-    // ctrbyte = h_tmp + MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes;
-    // cudaMemcpy(d_tmp, h_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes, cudaMemcpyHostToDevice);
-    // shake256<<<1,25>>>(d_tenc, MAYO_2_m_bytes, d_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes);
-    // // cudaMemcpy(h_tenc, d_tenc, MAYO_2_m_bytes, cudaMemcpyDeviceToHost);
-    // // printElement(h_tenc, MAYO_2_m_bytes, "Tenc:");
-
-    // int blocks = (((MAYO_2_m  + 1)/2) + THREADS-1)/THREADS;
-    // decode<<<blocks, THREADS>>>(d_tenc, d_t, MAYO_2_m);
-    // cudaMemcpy(h_t, d_t, MAYO_2_m, cudaMemcpyDeviceToHost);
-    // // printElement(h_t, MAYO_2_m, "t:");
-
-    // /***************TEST**********************/
-    // shake256<<<BATCH,25>>>(d_V,MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes,
-    //                    d_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1);
-
-    // cudaMemcpy(h_V, d_V, (MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes)*BATCH, cudaMemcpyDeviceToHost);
-    // // printElement(h_V, MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes, "V:");
-    // printBatch(h_V, MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes, BATCH, "V:");
-
-
-    // shake256(V, param_k * param_v_bytes + param_r_bytes, tmp,
-    //          param_digest_bytes + param_salt_bytes + param_sk_seed_bytes + 1);
-
+    cudaFreeHost(h_msg);
     cudaFreeHost(h_tmp);
     cudaFreeHost(h_salt);
     cudaFreeHost(h_tenc);
     cudaFreeHost(h_t);
     cudaFreeHost(h_V);
     cudaFreeHost(h_digest);
+    cudaFreeHost(h_Vdec);
+    cudaFreeHost(h_VL);
+    cudaFreeHost(h_P_batch);
 
-
-//     cudaMalloc((void**)&d_tmp,MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1);
-//     cudaMalloc((void**)&d_m, mlen);
-//     cudaMalloc((void**)&d_salt, MAYO_2_salt_bytes);
-//     cudaMalloc((void**)&d_tenc, MAYO_2_m_bytes);
-//     cudaMalloc((void**)&d_t, MAYO_2_m);  
     cudaFree(d_tmp);
     cudaFree(d_m);
     cudaFree(d_salt);
     cudaFree(d_tenc);
     cudaFree(d_t);
     cudaFree(d_V);
+    cudaFree(d_Vdec);
+    cudaFree(d_VL);
+    cudaFree(d_P_batch);
 
 
     return ret;
@@ -727,4 +740,59 @@ void mayo_secure_clear(void *mem, size_t size)
     typedef void *(*memset_t)(void *, int, size_t);
     static volatile memset_t memset_func = memset;
     memset_func(mem, 0, size);
+}
+
+__global__
+void mul_add_mat_x_m_mat_batch_kernel(int m_vec_limbs,
+                                      const unsigned char *mat,   
+                                      const uint64_t *bs_mat,
+                                      uint64_t *acc,
+                                      int mat_rows,              
+                                      int mat_cols,              
+                                      int bs_mat_cols,            
+                                      int mat_stride,             
+                                      int bs_mat_stride,          
+                                      int acc_stride              
+)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int outputs_per_batch = mat_rows * bs_mat_cols * m_vec_limbs;
+    int total = BATCH * outputs_per_batch;
+
+    if (tid >= total) {
+        return;
+    }
+
+    int batch = tid / outputs_per_batch;
+    int local = tid % outputs_per_batch;
+
+    int limb = local % m_vec_limbs;
+
+    int tmp = local / m_vec_limbs;
+    int k = tmp % bs_mat_cols;
+    int r = tmp / bs_mat_cols;
+
+    const unsigned char *mat_b =
+        mat + batch * mat_stride;
+
+    const uint64_t *bs_mat_b =
+        bs_mat + batch * bs_mat_stride;
+
+    uint64_t *acc_b =
+        acc + batch * acc_stride;
+
+    uint64_t sum =
+        acc_b[m_vec_limbs * (r * bs_mat_cols + k) + limb];
+
+    for (int c = 0; c < mat_cols; c++) {
+        uint8_t a = mat_b[r * mat_cols + c];
+
+        uint64_t b =
+            bs_mat_b[m_vec_limbs * (c * bs_mat_cols + k) + limb];
+
+        sum ^= gf16_vec_mul(b, a);
+    }
+
+    acc_b[m_vec_limbs * (r * bs_mat_cols + k) + limb] = sum;
 }

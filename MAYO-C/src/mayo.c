@@ -552,7 +552,9 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
     // printElement(Vdec, param_v*param_k, "Vdec:");
 
     /**************COMPUTE M and VPV****************************************************/
-    mul_add_mat_x_m_mat(PARAM_m_vec_limbs(p), Vdec, L, P1, param_k, param_v, param_o);
+    mul_add_mat_x_m_mat(PARAM_m_vec_limbs(p), Vdec, L, Mtmp, param_k, param_v, param_o);
+    printElement((unsigned char *)Mtmp, param_k * param_o * MAYO_2_m_vec_limbs * sizeof(uint64_t), "VL:");
+
 
 
   for (int ctr = 0; ctr <= 255; ++ctr) {
