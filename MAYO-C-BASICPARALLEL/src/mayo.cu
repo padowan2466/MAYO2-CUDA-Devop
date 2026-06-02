@@ -11,9 +11,10 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk);
 
 
 __global__ void decode(const unsigned char *m,
-                             unsigned char *mdec,
-                             int mdeclen,
-                             int blocks_per_sig);
+                       unsigned char *mdec,
+                       int mdeclen,
+                       int blocks_per_sig,
+                       int input_stride);
 
 __global__ void unpack_m_vecs(const unsigned char *in,
                               uint64_t *out,
@@ -213,12 +214,36 @@ int mayo2_sign_signature(unsigned char *sig,
                             MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1);
 
     cudaMemcpy(h_salt, d_salt, MAYO_2_salt_bytes*BATCH, cudaMemcpyDeviceToHost);
-    printBatch(h_salt, MAYO_2_salt_bytes, BATCH, "Salt:");
+    // printBatch(h_salt, MAYO_2_salt_bytes, BATCH, "Salt:");
+
+    
+
+    for (int i = 0; i < BATCH; i++)
+    {
+        unsigned char *tmp_i = h_tmp + i * tmp_bytes;
+        unsigned char *salt_i = h_salt + i * MAYO_2_salt_bytes;
+
+        memcpy(tmp_i + MAYO_2_digest_bytes,
+            salt_i,
+            MAYO_2_salt_bytes);
+    }
+
+    // printBatch(h_tmp, tmp_bytes, BATCH, "TMP:");
+    cudaMemcpy(d_tmp, h_tmp, tmp_bytes*BATCH, cudaMemcpyHostToDevice);
+
+    shake256<<<BATCH, 25>>>(d_tenc, MAYO_2_m_bytes, d_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes, tmp_bytes);
+
+    // cudaMemcpy(h_tenc, d_tenc, MAYO_2_m_bytes*BATCH, cudaMemcpyDeviceToHost);
+    // printBatch(h_tenc, MAYO_2_m_bytes, BATCH, "Tenc:");
+    int blocks = (((MAYO_2_m  + 1)/2) + THREADS-1)/THREADS;
+    decode<<<blocks*BATCH, THREADS>>>(d_tenc, d_t, MAYO_2_m, blocks,MAYO_2_m_bytes);
+    cudaMemcpy(h_t, d_t, MAYO_2_m*BATCH, cudaMemcpyDeviceToHost);
+    printBatch(h_t, MAYO_2_m, BATCH, "T:");
 
 
     // printElement(h_tmp, (MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1), "tmp:");
 
-    // uint64_t *P1 = sk.p;
+    // uint64_t *P1 = sk.p;,
     // uint64_t *L = P1 + P1_LIMBS_MAX;
     // uint64_t Mtmp[(MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs)*BATCH] = {0};
 
@@ -227,7 +252,7 @@ int mayo2_sign_signature(unsigned char *sig,
     //     for (int i = 0; i < MAYO_2_salt_bytes; i++) {
     //         h_tmp[MAYO_2_digest_bytes + i*j] = 1;
     //     }
-    //     memcpy(h_tmp + MAYO_2_digest_bytes + MAYO_2_salt_bytes, seed_sk,
+    //     memcpy(h_tmp + MAYO_2_digest_bytes + MAYO_param_digest_bytes + param_salt_bytes + param_sk_seed_bytes + 12_salt_bytes, seed_sk,
     //      MAYO_2_sk_seed_bytes);
     // }
     
@@ -380,7 +405,8 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
         d_S + MAYO_2_pk_seed_bytes,
         d_O,
         mdeclen,
-        blocks_per_sig
+        blocks_per_sig,
+        MAYO_2_pk_seed_bytes + MAYO_2_O_bytes
     );
 
     cudaDeviceSynchronize();
@@ -493,7 +519,8 @@ int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
 __global__ void decode(const unsigned char *m,
                        unsigned char *mdec,
                        int mdeclen,
-                       int blocks_per_sig)
+                       int blocks_per_sig,
+                       int input_stride)
 {
     int sig_id = blockIdx.x / blocks_per_sig;
 
@@ -507,7 +534,7 @@ __global__ void decode(const unsigned char *m,
     }
 
     const unsigned char *m_sig =
-        m + sig_id * (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes);
+        m + sig_id * input_stride;
 
     unsigned char *mdec_sig =
         mdec + sig_id * mdeclen;
