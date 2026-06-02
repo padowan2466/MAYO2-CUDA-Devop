@@ -537,12 +537,23 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
   // printElement(tenc, param_m_bytes, "Tenc:");
 
   decode(tenc, t, param_m); // may not be necessary
-  printElement(t, param_m, "t:");
+  // printElement(t, param_m, "t:");
 
   /***** TEST ***********/
   shake256(V, param_k * param_v_bytes + param_r_bytes, tmp,
              param_digest_bytes + param_salt_bytes + param_sk_seed_bytes + 1);
   printElement(V, param_k * param_v_bytes + param_r_bytes, "V:");
+
+  // decode the v_i vectors
+    for (int i = 0; i <= param_k - 1; ++i) {
+      decode(V + i * param_v_bytes, Vdec + i * param_v, param_v);
+    }
+
+    // printElement(Vdec, param_v*param_k, "Vdec:");
+
+    /**************COMPUTE M and VPV****************************************************/
+    mul_add_mat_x_m_mat(PARAM_m_vec_limbs(p), Vdec, L, P1, param_k, param_v, param_o);
+
 
   for (int ctr = 0; ctr <= 255; ++ctr) {
     *ctrbyte = (unsigned char)ctr;
