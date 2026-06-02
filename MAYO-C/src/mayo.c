@@ -509,8 +509,9 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
   // hashing to salt
   memcpy(tmp + param_digest_bytes + param_salt_bytes, seed_sk,
          param_sk_seed_bytes);
-  for (int i = 0; i < param_sk_seed_bytes; i++) {
-    printf("%02x", tmp[param_digest_bytes + i]);
+  printf("\r\n\n");
+         for (int i = 0; i < param_digest_bytes + param_salt_bytes + param_sk_seed_bytes + 1; i++) {
+    printf("%02x, ", tmp[i]);
   }
   printf("\r\n");
   // printElement(tmp, param_digest_bytes + param_salt_bytes + param_sk_seed_bytes, "tmp:");
