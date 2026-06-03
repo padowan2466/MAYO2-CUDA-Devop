@@ -35,7 +35,7 @@ void mayo_secure_clear(void *mem,
 
 
 __global__
-void mul_add_mat_x_m_mat_batch_kernel(int m_vec_limbs,
+void mul_add_mat_x_m_mat(int m_vec_limbs,
                                       const unsigned char *mat,   
                                       const uint64_t *bs_mat,
                                       uint64_t *acc,
@@ -46,6 +46,14 @@ void mul_add_mat_x_m_mat_batch_kernel(int m_vec_limbs,
                                       int bs_mat_stride,          
                                       int acc_stride              
 );
+
+__global__
+void P1_times_Vt(const uint64_t *P1,
+                              const unsigned char *Vdec,
+                              uint64_t *Pv,
+                              int p_limbs_per_sig,
+                              int Vdec_stride,
+                              int Pv_stride);
 
 void printElement(unsigned char* element, int n, const char* title)
 {
@@ -152,6 +160,9 @@ int mayo2_sign_signature(unsigned char *sig,
     int p2_limbs = p2_vecs * MAYO_2_m_vec_limbs;
     int p_limbs_per_sig = p1_limbs + p2_limbs;
 
+    unsigned char *h_A, *d_A;
+    uint64_t *d_Pv, *h_Pv;
+
     cudaMallocHost((void**)&h_msg, mlen*BATCH);
     cudaMallocHost((void**)&h_tmp,(MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*BATCH);
     cudaMallocHost((void**)&h_salt, (MAYO_2_salt_bytes)*BATCH);
@@ -162,6 +173,8 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaMallocHost((void**)&h_Vdec, MAYO_2_v*MAYO_2_k*BATCH);
     cudaMallocHost((void**)&h_VL, MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
     cudaMallocHost((void **)&h_P_batch, p_limbs_per_sig * sizeof(uint64_t) * BATCH);
+    cudaMallocHost((void**)&h_Pv, MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
+    cudaMallocHost((void**)&h_A,  MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
 
 
     cudaMalloc((void**)&d_tmp,(MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*BATCH);
@@ -173,6 +186,8 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaMalloc((void**)&d_Vdec, MAYO_2_v*MAYO_2_k*BATCH);
     cudaMalloc((void**)&d_VL, MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
     cudaMalloc((void **)&d_P_batch, p_limbs_per_sig * sizeof(uint64_t) * BATCH);
+    cudaMalloc((void**)&d_Pv, MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
+    cudaMalloc((void**)&d_A,  MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
 
 
     alignas(32) sk_t sk[BATCH];
@@ -307,10 +322,10 @@ int mayo2_sign_signature(unsigned char *sig,
         );
     }
 
-    cudaMemcpy(h_Vdec,
-           d_Vdec,
-           Vdec_per_batch * BATCH,
-           cudaMemcpyDeviceToHost);
+    // cudaMemcpy(h_Vdec,
+    //        d_Vdec,
+    //        Vdec_per_batch * BATCH,
+    //        cudaMemcpyDeviceToHost);
 
     // printBatch(h_Vdec, Vdec_per_batch, BATCH, "Vdec:");
 
@@ -318,37 +333,73 @@ int mayo2_sign_signature(unsigned char *sig,
            0,
            MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
 
-    int VL_limbs_per_batch = MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs;
 
-    int mat_rows = MAYO_2_k;
-    int mat_cols = MAYO_2_v;
-    int bs_mat_cols = MAYO_2_o;
-
-    int mat_stride = MAYO_2_k * MAYO_2_v;
-    int bs_mat_stride = p_limbs_per_sig;
-    int acc_stride = VL_limbs_per_batch;
-
-    int total_VL = BATCH * mat_rows * bs_mat_cols * MAYO_2_m_vec_limbs;
+    int total_VL = BATCH * MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs;
     int blocks_VL = (total_VL + THREADS - 1) / THREADS;
 
-    mul_add_mat_x_m_mat_batch_kernel<<<blocks_VL, THREADS>>>(
+    mul_add_mat_x_m_mat<<<blocks_VL, THREADS>>>(
         MAYO_2_m_vec_limbs,
         d_Vdec,
         d_L,
         d_VL,
-        mat_rows,
-        mat_cols,
-        bs_mat_cols,
-        mat_stride,
-        bs_mat_stride,
-        acc_stride
+        MAYO_2_k,
+        MAYO_2_v,
+        MAYO_2_o,
+        MAYO_2_k * MAYO_2_v,
+        p_limbs_per_sig,
+        MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs
     );
 
     cudaDeviceSynchronize();
 
-    cudaMemcpy(h_VL, d_VL, VL_limbs_per_batch * sizeof(uint64_t) * BATCH, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_VL, d_VL, MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH, cudaMemcpyDeviceToHost);
 
-    printBatch((unsigned char *)h_VL, VL_limbs_per_batch * sizeof(uint64_t), BATCH, "VL:");
+    // printBatch((unsigned char *)h_VL, MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t), BATCH, "VL:");
+
+
+    uint64_t *d_P1 = d_P_batch;
+
+    cudaMemset(d_Pv,
+            0,
+            MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
+
+    int total_Pv = BATCH * MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs;
+    int blocks_Pv = (total_Pv + THREADS - 1) / THREADS;
+
+    P1_times_Vt<<<blocks_Pv, THREADS>>>(
+        d_P1,
+        d_Vdec,
+        d_Pv,
+        p_limbs_per_sig,
+        MAYO_2_k * MAYO_2_v,
+        MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs
+    );
+
+    cudaDeviceSynchronize();
+
+    cudaMemset(d_A, 0, MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
+
+    int total_A = BATCH * MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs;
+    int blocks_A = (total_A + THREADS - 1) / THREADS;
+
+    mul_add_mat_x_m_mat<<<blocks_A, THREADS>>>(
+        MAYO_2_m_vec_limbs,
+        d_Vdec,
+        d_Pv,
+        (uint64_t *)d_A,
+        MAYO_2_k,
+        MAYO_2_v,
+        MAYO_2_k,
+        MAYO_2_k * MAYO_2_v,
+        MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs,
+        MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs
+    );
+
+    cudaDeviceSynchronize();
+
+    cudaMemcpy(h_A, d_A, MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH, cudaMemcpyDeviceToHost);
+
+    printBatch((unsigned char *)h_A, MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t), BATCH, "VP1V / A:");
 
     
 
@@ -362,6 +413,8 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaFreeHost(h_Vdec);
     cudaFreeHost(h_VL);
     cudaFreeHost(h_P_batch);
+    cudaFreeHost(h_Pv);
+    cudaFreeHost(h_A);
 
     cudaFree(d_tmp);
     cudaFree(d_m);
@@ -372,6 +425,8 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaFree(d_Vdec);
     cudaFree(d_VL);
     cudaFree(d_P_batch);
+    cudaFree(d_Pv);
+    cudaFree(d_A);
 
 
     return ret;
@@ -743,7 +798,7 @@ void mayo_secure_clear(void *mem, size_t size)
 }
 
 __global__
-void mul_add_mat_x_m_mat_batch_kernel(int m_vec_limbs,
+void mul_add_mat_x_m_mat(int m_vec_limbs,
                                       const unsigned char *mat,   
                                       const uint64_t *bs_mat,
                                       uint64_t *acc,
@@ -795,4 +850,57 @@ void mul_add_mat_x_m_mat_batch_kernel(int m_vec_limbs,
     }
 
     acc_b[m_vec_limbs * (r * bs_mat_cols + k) + limb] = sum;
+}
+
+__global__
+void P1_times_Vt(const uint64_t *P1,
+                              const unsigned char *Vdec,
+                              uint64_t *Pv,
+                              int p_limbs_per_sig,
+                              int Vdec_stride,
+                              int Pv_stride)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int outputs_per_batch = MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs;
+    int total = BATCH * outputs_per_batch;
+
+    if (tid >= total) {
+        return;
+    }
+
+    int batch = tid / outputs_per_batch;
+    int local = tid % outputs_per_batch;
+
+    int limb = local % MAYO_2_m_vec_limbs;
+
+    int tmp = local / MAYO_2_m_vec_limbs;
+    int k = tmp % MAYO_2_k;
+    int r = tmp / MAYO_2_k;
+
+    const uint64_t *P1_b =
+        P1 + batch * p_limbs_per_sig;
+
+    const unsigned char *Vdec_b =
+        Vdec + batch * Vdec_stride;
+
+    uint64_t *Pv_b =
+        Pv + batch * Pv_stride;
+
+    uint64_t sum = 0;
+
+    for (int c = r; c < MAYO_2_v; c++)
+    {
+        int p1_index = upper_triangular_index(r, c, MAYO_2_v);
+
+        uint64_t p1_val =
+            P1_b[p1_index * MAYO_2_m_vec_limbs + limb];
+
+        uint8_t v =
+            Vdec_b[k * MAYO_2_v + c];
+
+        sum ^= gf16_vec_mul(p1_val, v);
+    }
+
+    Pv_b[(r * MAYO_2_k + k) * MAYO_2_m_vec_limbs + limb] = sum;
 }

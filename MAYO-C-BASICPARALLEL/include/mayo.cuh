@@ -19,7 +19,7 @@
 #define THREADS (256)
 
 
-#define BATCH (5U)
+#define BATCH (3U)
 
 
 /*

@@ -542,7 +542,7 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
   /***** TEST ***********/
   shake256(V, param_k * param_v_bytes + param_r_bytes, tmp,
              param_digest_bytes + param_salt_bytes + param_sk_seed_bytes + 1);
-  printElement(V, param_k * param_v_bytes + param_r_bytes, "V:");
+  // printElement(V, param_k * param_v_bytes + param_r_bytes, "V:");
 
   // decode the v_i vectors
     for (int i = 0; i <= param_k - 1; ++i) {
@@ -553,7 +553,13 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
 
     /**************COMPUTE M and VPV****************************************************/
     mul_add_mat_x_m_mat(PARAM_m_vec_limbs(p), Vdec, L, Mtmp, param_k, param_v, param_o);
-    printElement((unsigned char *)Mtmp, param_k * param_o * MAYO_2_m_vec_limbs * sizeof(uint64_t), "VL:");
+    // printElement((unsigned char *)Mtmp, param_k * param_o * MAYO_2_m_vec_limbs * sizeof(uint64_t), "VL:");
+
+    uint64_t Pv[V_MAX * K_MAX * M_VEC_LIMBS_MAX] = {0};
+    P1_times_Vt(p, P1, Vdec, Pv);
+    mul_add_mat_x_m_mat(PARAM_m_vec_limbs(p), Vdec, Pv, (uint64_t *)A, param_k, param_v, param_k);
+    printElement((unsigned char *)A, param_k * param_k * PARAM_m_vec_limbs(p) * sizeof(uint64_t), "VP1V / A:");
+
 
 
 
@@ -573,6 +579,8 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
 
     compute_rhs(p, (uint64_t *)A, t, y);
     compute_A(p, Mtmp, A);
+
+
 
     for (int i = 0; i < param_m; i++) {
       A[(1 + i) * (param_k * param_o + 1) - 1] = 0;
