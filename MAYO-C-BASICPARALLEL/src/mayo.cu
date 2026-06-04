@@ -55,6 +55,29 @@ void P1_times_Vt(const uint64_t *P1,
                               int Vdec_stride,
                               int Pv_stride);
 
+
+__global__
+void compute_rhs_finegrain(const uint64_t *vPv,
+                                  const unsigned char *t,
+                                  unsigned char *y);
+
+__global__
+void compute_A_build(const uint64_t *VtL,
+                            uint64_t *A_work);
+
+__global__
+void compute_A_transpose(uint64_t *A_work);
+
+__global__
+void compute_A_reduce(uint64_t *A_work);
+
+__global__
+void compute_A_decode(const uint64_t *A_work,
+                             unsigned char *A_out);
+
+__global__
+void zero_last_column_A(unsigned char *A);
+
 void printElement(unsigned char* element, int n, const char* title)
 {
   printf("\r\n");
@@ -134,10 +157,10 @@ int mayo2_sign_signature(unsigned char *sig,
     const unsigned char *seed_sk;
 
     unsigned char *h_msg;
-    unsigned char *h_tmp, *d_tmp;//[DIGEST_BYTES_MAX + SALT_BYTES_MAX + SK_SEED_BYTES_MAX + 1];
+    unsigned char *h_tmp, *d_tmp;
     unsigned char *d_m;
 
-    unsigned char *h_salt, *d_salt;//[SALT_BYTES_MAX];
+    unsigned char *h_salt, *d_salt;
 
     unsigned char *ctrbyte;
 
@@ -145,13 +168,15 @@ int mayo2_sign_signature(unsigned char *sig,
 
     unsigned char *h_t, *d_t;
 
-    unsigned char *h_V, *d_V; //[K_MAX * V_BYTES_MAX + R_BYTES_MAX]
+    unsigned char *h_V, *d_V;
 
     unsigned char *h_digest;
 
     unsigned char *d_Vdec, *h_Vdec;
 
     uint64_t *d_VL, *h_VL;
+
+    unsigned char *h_y, *d_y;
 
     uint64_t *h_P_batch, *d_P_batch;
     int p1_vecs = MAYO_2_v * (MAYO_2_v + 1) / 2;
@@ -162,6 +187,21 @@ int mayo2_sign_signature(unsigned char *sig,
 
     unsigned char *h_A, *d_A;
     uint64_t *d_Pv, *h_Pv;
+
+    uint64_t *d_A_work;
+    unsigned char *d_A_out;
+    unsigned char *h_A_out;
+
+    int pairs = (MAYO_2_k + 1) * MAYO_2_k / 2;
+    int A_width = ((MAYO_2_o * MAYO_2_k + 15) / 16) * 16;
+    int A_work_limbs_per_batch =
+        A_width * ((MAYO_2_m + pairs + 15) / 16);
+
+    int A_out_bytes_per_batch =
+        MAYO_2_m * MAYO_2_A_cols;
+
+    unsigned char *h_r, *d_r;
+    int r_per_batch = MAYO_2_k * MAYO_2_o;
 
     cudaMallocHost((void**)&h_msg, mlen*BATCH);
     cudaMallocHost((void**)&h_tmp,(MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*BATCH);
@@ -175,6 +215,9 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaMallocHost((void **)&h_P_batch, p_limbs_per_sig * sizeof(uint64_t) * BATCH);
     cudaMallocHost((void**)&h_Pv, MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
     cudaMallocHost((void**)&h_A,  MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
+    cudaMallocHost((void**)&h_y, MAYO_2_m * BATCH);
+    cudaMallocHost((void **)&h_A_out, A_out_bytes_per_batch * BATCH);
+    cudaMallocHost((void**)&h_r, MAYO_2_k * MAYO_2_o * BATCH);
 
 
     cudaMalloc((void**)&d_tmp,(MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*BATCH);
@@ -188,11 +231,17 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaMalloc((void **)&d_P_batch, p_limbs_per_sig * sizeof(uint64_t) * BATCH);
     cudaMalloc((void**)&d_Pv, MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
     cudaMalloc((void**)&d_A,  MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
+    cudaMalloc((void**)&d_y, MAYO_2_m * BATCH);
+    cudaMalloc((void **)&d_A_work, A_work_limbs_per_batch * sizeof(uint64_t) * BATCH);
+    cudaMalloc((void **)&d_A_out, A_out_bytes_per_batch * BATCH);
+    cudaMalloc((void**)&d_r, MAYO_2_k * MAYO_2_o * BATCH);
+
+    
+
 
 
     alignas(32) sk_t sk[BATCH];
     ret = mayo_expand_sk(csk, sk);
-    // print_sk_batch_first_last(sk, BATCH);
 
     for (int i = 0; i < BATCH; i++)
     {
@@ -210,7 +259,6 @@ int mayo2_sign_signature(unsigned char *sig,
 
 
 
-    // seed_sk = csk;
 
     printf("\nmsg\n");
     for (size_t i = 0; i < mlen; i++) {
@@ -224,11 +272,9 @@ int mayo2_sign_signature(unsigned char *sig,
         for(int j=0;j<mlen;j++) h_msg[j + i*mlen] = m[j];
     }
 
-    // printBatch(h_msg, mlen, BATCH, "MSG:");
 
     cudaMemcpy(d_m, h_msg,  mlen*BATCH, cudaMemcpyHostToDevice);
 
-    // cudaEventRecord(start);
     shake256<<<BATCH,25>>>(d_tmp, MAYO_2_digest_bytes, d_m, mlen, 0);
 
 
@@ -273,7 +319,6 @@ int mayo2_sign_signature(unsigned char *sig,
                             MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1);
 
     cudaMemcpy(h_salt, d_salt, MAYO_2_salt_bytes*BATCH, cudaMemcpyDeviceToHost);
-    // printBatch(h_salt, MAYO_2_salt_bytes, BATCH, "Salt:");
 
     
 
@@ -287,23 +332,18 @@ int mayo2_sign_signature(unsigned char *sig,
             MAYO_2_salt_bytes);
     }
 
-    // printBatch(h_tmp, tmp_bytes, BATCH, "TMP:");
     cudaMemcpy(d_tmp, h_tmp, tmp_bytes*BATCH, cudaMemcpyHostToDevice);
 
     shake256<<<BATCH, 25>>>(d_tenc, MAYO_2_m_bytes, d_tmp, MAYO_2_digest_bytes + MAYO_2_salt_bytes, tmp_bytes);
 
-    // cudaMemcpy(h_tenc, d_tenc, MAYO_2_m_bytes*BATCH, cudaMemcpyDeviceToHost);
-    // printBatch(h_tenc, MAYO_2_m_bytes, BATCH, "Tenc:");
     int blocks = (((MAYO_2_m  + 1)/2) + THREADS-1)/THREADS;
     decode<<<blocks*BATCH, THREADS>>>(d_tenc, d_t, MAYO_2_m, blocks,MAYO_2_m_bytes, MAYO_2_m);
     cudaMemcpy(h_t, d_t, MAYO_2_m*BATCH, cudaMemcpyDeviceToHost);
-    // printBatch(h_t, MAYO_2_m, BATCH, "T:");
 
     shake256<<<BATCH, 25>>>(d_V, MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes, d_tmp,
              tmp_bytes, 0);
 
     cudaMemcpy(h_V, d_V, (MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes)*BATCH, cudaMemcpyDeviceToHost);
-    // printBatch(h_V, MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes, BATCH, "V:");
 
     int V_blocks = (((MAYO_2_v + 1) / 2) + THREADS - 1) / THREADS;
 
@@ -322,12 +362,6 @@ int mayo2_sign_signature(unsigned char *sig,
         );
     }
 
-    // cudaMemcpy(h_Vdec,
-    //        d_Vdec,
-    //        Vdec_per_batch * BATCH,
-    //        cudaMemcpyDeviceToHost);
-
-    // printBatch(h_Vdec, Vdec_per_batch, BATCH, "Vdec:");
 
     cudaMemset(d_VL,
            0,
@@ -353,8 +387,6 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaDeviceSynchronize();
 
     cudaMemcpy(h_VL, d_VL, MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH, cudaMemcpyDeviceToHost);
-
-    // printBatch((unsigned char *)h_VL, MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t), BATCH, "VL:");
 
 
     uint64_t *d_P1 = d_P_batch;
@@ -401,6 +433,96 @@ int mayo2_sign_signature(unsigned char *sig,
 
     printBatch((unsigned char *)h_A, MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t), BATCH, "VP1V / A:");
 
+
+    compute_rhs_finegrain<<<BATCH, MAYO_2_m_vec_limbs>>>(
+        (uint64_t *)d_A,
+        d_t,
+        d_y
+        );
+
+    cudaDeviceSynchronize();
+
+    cudaMemcpy(h_y,
+            d_y,
+            MAYO_2_m * BATCH,
+            cudaMemcpyDeviceToHost);
+
+
+    int total_build =
+    BATCH *
+    pairs *
+    MAYO_2_o *
+    MAYO_2_m_vec_limbs *
+    2;
+
+    int blocks_build = (total_build + THREADS - 1) / THREADS;
+
+    compute_A_build<<<blocks_build, THREADS>>>(
+        d_VL,
+        d_A_work
+    );
+
+    int transpose_blocks_per_batch = A_work_limbs_per_batch / 16;
+    int total_transpose = BATCH * transpose_blocks_per_batch;
+    int blocks_transpose = (total_transpose + THREADS - 1) / THREADS;
+
+    compute_A_transpose<<<blocks_transpose, THREADS>>>(
+        d_A_work
+    );
+
+    int total_reduce =
+    BATCH *
+    (A_width / 16) *
+    pairs;
+
+    int blocks_reduce = (total_reduce + THREADS - 1) / THREADS;
+
+    compute_A_reduce<<<blocks_reduce, THREADS>>>(
+        d_A_work
+    );
+
+    int total_decode =
+    BATCH *
+    MAYO_2_m *
+    (MAYO_2_A_cols - 1);
+
+    int blocks_decode = (total_decode + THREADS - 1) / THREADS;
+
+    compute_A_decode<<<blocks_decode, THREADS>>>(
+        d_A_work,
+        d_A_out
+    );
+
+    int total_zero = BATCH * MAYO_2_m;
+    int blocks_zero = (total_zero + THREADS - 1) / THREADS;
+
+    zero_last_column_A<<<blocks_zero, THREADS>>>(d_A_out);
+
+    int r_blocks = (((MAYO_2_k * MAYO_2_o + 1) / 2) + THREADS - 1) / THREADS;
+
+    decode<<<r_blocks * BATCH, THREADS>>>(
+        d_V + MAYO_2_k * MAYO_2_v_bytes,
+        d_r,
+        MAYO_2_k * MAYO_2_o,
+        r_blocks,
+        MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes,
+        MAYO_2_k * MAYO_2_o
+    );
+
+    cudaMemcpy(h_r,
+           d_r,
+           MAYO_2_k * MAYO_2_o * BATCH,
+           cudaMemcpyDeviceToHost);
+
+    printBatch(h_r,
+           MAYO_2_k * MAYO_2_o,
+           BATCH,
+           "r:");
+
+    
+
+
+
     
 
     cudaFreeHost(h_msg);
@@ -414,7 +536,12 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaFreeHost(h_VL);
     cudaFreeHost(h_P_batch);
     cudaFreeHost(h_Pv);
+    cudaFreeHost(h_y);
     cudaFreeHost(h_A);
+    cudaFreeHost(h_A_out);
+    cudaFreeHost(h_r);
+
+    
 
     cudaFree(d_tmp);
     cudaFree(d_m);
@@ -427,6 +554,10 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaFree(d_P_batch);
     cudaFree(d_Pv);
     cudaFree(d_A);
+    cudaFree(d_y);
+    cudaFree(d_A_work);
+    cudaFree(d_A_out);
+    cudaFree(d_r);
 
 
     return ret;
@@ -904,3 +1035,365 @@ void P1_times_Vt(const uint64_t *P1,
 
     Pv_b[(r * MAYO_2_k + k) * MAYO_2_m_vec_limbs + limb] = sum;
 }
+
+__global__
+void compute_rhs_finegrain(const uint64_t *vPv,
+                                  const unsigned char *t,
+                                  unsigned char *y)                              
+{
+    int batch = blockIdx.x;
+    int tid = threadIdx.x;   
+
+    const int param_k = MAYO_2_k;
+    const int param_m = MAYO_2_m;
+    const int m_vec_limbs = MAYO_2_m_vec_limbs; 
+
+    if (tid >= m_vec_limbs) {
+        return;
+    }
+
+    const int top_pos = ((param_m - 1) % 16) * 4;
+
+    const uint64_t *vPv_b =
+        vPv + batch * param_k * param_k * m_vec_limbs;
+
+    const unsigned char *t_b =
+        t + batch * param_m;
+
+    unsigned char *y_b =
+        y + batch * param_m;
+
+    __shared__ uint64_t temp[M_VEC_LIMBS_MAX];
+    __shared__ unsigned char top;
+
+    temp[tid] = 0;
+
+    __syncthreads();
+
+    for (int i = param_k - 1; i >= 0; i--) {
+        for (int j = i; j < param_k; j++) {
+
+           
+            if (tid == m_vec_limbs - 1) {
+                top = (unsigned char)((temp[m_vec_limbs - 1] >> top_pos) & 0xF);
+            }
+
+            __syncthreads();
+
+            
+            uint64_t old_limb = temp[tid];
+            uint64_t carry_in = 0;
+
+            if (tid > 0) {
+                carry_in = temp[tid - 1] >> 60;
+            }
+
+            __syncthreads();
+
+            temp[tid] = (old_limb << 4) ^ carry_in;
+
+            __syncthreads();
+
+            
+            if (tid == 0) 
+            {
+                unsigned char *temp_bytes = (unsigned char *)temp;
+
+                for (int jj = 0; jj < F_TAIL_LEN; jj++) {
+                    unsigned char val = mul_f(top, d_f_tail_64[jj]);
+
+                    if ((jj & 1) == 0) {
+                        temp_bytes[jj / 2] ^= val;
+                    } else {
+                        temp_bytes[jj / 2] ^= val << 4;
+                    }
+                }
+            }
+
+            __syncthreads();
+
+        
+            uint64_t a =
+                vPv_b[(i * param_k + j) * m_vec_limbs + tid];
+
+            uint64_t b = 0;
+
+            if (i != j) {
+                b = vPv_b[(j * param_k + i) * m_vec_limbs + tid];
+            }
+
+            temp[tid] ^= a ^ b;
+
+            __syncthreads();
+        }
+    }
+
+
+    for (int idx = tid; idx < param_m; idx += m_vec_limbs) {
+        unsigned char *temp_bytes = (unsigned char *)temp;
+
+        unsigned char temp_i =
+            (temp_bytes[idx / 2] >> (4 * (idx & 1))) & 0xF;
+
+        y_b[idx] = t_b[idx] ^ temp_i;
+    }
+}
+
+
+__global__
+void compute_A_build(const uint64_t *VtL,
+                            uint64_t *A_work)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    const int param_k = MAYO_2_k;
+    const int param_o = MAYO_2_o;
+    const int m_vec_limbs = MAYO_2_m_vec_limbs;
+
+    const int A_width = ((MAYO_2_o * MAYO_2_k + 15) / 16) * 16;
+    const int pairs = (MAYO_2_k + 1) * MAYO_2_k / 2;
+
+    int total = BATCH * pairs * MAYO_2_o * m_vec_limbs * 2;
+
+    if (tid >= total) {
+        return;
+    }
+
+    int local = tid;
+
+    int side = local % 2;
+    local /= 2;
+
+    int limb = local % m_vec_limbs;
+    local /= m_vec_limbs;
+
+    int c = local % param_o;
+    local /= param_o;
+
+    int pair_id = local % pairs;
+    int batch = local / pairs;
+
+    int i_found = 0;
+    int j_found = 0;
+    int count = 0;
+
+    for (int i = 0; i < param_k; i++) {
+        for (int j = param_k - 1; j >= i; j--) {
+            if (count == pair_id) {
+                i_found = i;
+                j_found = j;
+            }
+            count++;
+        }
+    }
+
+    int i = i_found;
+    int j = j_found;
+
+    if (side == 1 && i == j) {
+        return;
+    }
+
+    int bits_to_shift = (4 * pair_id) % 64;
+    int words_to_shift = (4 * pair_id) / 64;
+
+    const uint64_t *VtL_b =
+        VtL + batch * param_k * param_o * m_vec_limbs;
+
+    uint64_t *A_b =
+        A_work + batch * A_width *
+        ((MAYO_2_m + pairs + 15) / 16);
+
+    int source_row;
+    int target_col;
+
+    if (side == 0) {
+        source_row = j;
+        target_col = param_o * i + c;
+    } else {
+        source_row = i;
+        target_col = param_o * j + c;
+    }
+
+    uint64_t value =
+        VtL_b[(source_row * param_o + c) * m_vec_limbs + limb];
+
+    int pos =
+        target_col + (limb + words_to_shift) * A_width;
+
+    atomicXor((unsigned long long *)&A_b[pos],
+              (unsigned long long)(value << bits_to_shift));
+
+    if (bits_to_shift > 0) {
+        int pos_hi =
+            target_col + (limb + words_to_shift + 1) * A_width;
+
+        atomicXor((unsigned long long *)&A_b[pos_hi],
+                  (unsigned long long)(value >> (64 - bits_to_shift)));
+    }
+}
+
+__global__
+void compute_A_transpose(uint64_t *A_work)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    const int A_width = ((MAYO_2_o * MAYO_2_k + 15) / 16) * 16;
+    const int pairs = (MAYO_2_k + 1) * MAYO_2_k / 2;
+
+    int blocks_per_batch =
+        (A_width * ((MAYO_2_m + pairs + 15) / 16)) / 16;
+
+    int total = BATCH * blocks_per_batch;
+
+    if (tid >= total) {
+        return;
+    }
+
+    int batch = tid / blocks_per_batch;
+    int local_block = tid % blocks_per_batch;
+
+    uint64_t *A_b =
+        A_work + batch * A_width *
+        ((MAYO_2_m + pairs + 15) / 16);
+
+    transpose_16x16_nibbles_gpu(A_b + local_block * 16);
+}
+
+
+__global__
+void compute_A_reduce(uint64_t *A_work)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    const int A_width = ((MAYO_2_o * MAYO_2_k + 15) / 16) * 16;
+    const int pairs = (MAYO_2_k + 1) * MAYO_2_k / 2;
+
+    int c_blocks = A_width / 16;
+
+    int total = BATCH * c_blocks * pairs;
+
+    if (tid >= total) {
+        return;
+    }
+
+    int local = tid;
+
+    int pair_row = local % pairs;
+    local /= pairs;
+
+    int c_block = local % c_blocks;
+    int batch = local / c_blocks;
+
+    int c = c_block * 16;
+    int r = MAYO_2_m + pair_row;
+
+    uint64_t *A_b =
+        A_work + batch * A_width *
+        ((MAYO_2_m + pairs + 15) / 16);
+
+    uint64_t low_bit_in_nibble = 0x1111111111111111ULL;
+
+    size_t pos =
+        (r / 16) * A_width + c + (r % 16);
+
+    uint64_t word = A_b[pos];
+
+    uint64_t t0 = word & low_bit_in_nibble;
+    uint64_t t1 = (word >> 1) & low_bit_in_nibble;
+    uint64_t t2 = (word >> 2) & low_bit_in_nibble;
+    uint64_t t3 = (word >> 3) & low_bit_in_nibble;
+
+    for (int t = 0; t < F_TAIL_LEN; t++) {
+        unsigned char f = d_f_tail_64[t];
+
+        unsigned char tab0 = mul_f(f, 1);
+        unsigned char tab1 = mul_f(f, 2);
+        unsigned char tab2 = mul_f(f, 4);
+        unsigned char tab3 = mul_f(f, 8);
+
+        uint64_t value =
+            t0 * tab0 ^
+            t1 * tab1 ^
+            t2 * tab2 ^
+            t3 * tab3;
+
+        int rr = r + t - MAYO_2_m;
+
+        size_t dst =
+            (rr / 16) * A_width + c + (rr % 16);
+
+        atomicXor((unsigned long long *)&A_b[dst],
+                  (unsigned long long)value);
+    }
+}
+
+__global__
+void compute_A_decode(const uint64_t *A_work,
+                             unsigned char *A_out)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    const int A_width = ((MAYO_2_o * MAYO_2_k + 15) / 16) * 16;
+    const int A_cols = MAYO_2_k * MAYO_2_o + 1;
+
+    int useful_cols = A_cols - 1;
+
+    int total = BATCH * MAYO_2_m * useful_cols;
+
+    if (tid >= total) {
+        return;
+    }
+
+    int local = tid;
+
+    int col = local % useful_cols;
+    local /= useful_cols;
+
+    int row = local % MAYO_2_m;
+    int batch = local / MAYO_2_m;
+
+    const uint64_t *A_b =
+        A_work + batch * A_width *
+        ((MAYO_2_m + ((MAYO_2_k + 1) * MAYO_2_k / 2) + 15) / 16);
+
+    unsigned char *A_out_b =
+        A_out + batch * MAYO_2_m * A_cols;
+
+    int c_base = (col / 16) * 16;
+    int c_off = col % 16;
+
+    int row_block = (row / 16) * 16;
+    int row_off = row % 16;
+
+    size_t pos =
+        row_block * (A_width / 16) + c_base + row_off;
+
+    uint64_t word = A_b[pos];
+
+    A_out_b[row * A_cols + col] =
+        (word >> (4 * c_off)) & 0xF;
+}
+
+__global__
+void zero_last_column_A(unsigned char *A)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int total = BATCH * MAYO_2_m;
+
+    if (tid >= total) {
+        return;
+    }
+
+    int batch = tid / MAYO_2_m;
+    int row   = tid % MAYO_2_m;
+
+    int A_cols = MAYO_2_k * MAYO_2_o + 1;
+    int A_bytes_per_batch = MAYO_2_m * A_cols;
+
+    unsigned char *A_b = A + batch * A_bytes_per_batch;
+
+    A_b[row * A_cols + (A_cols - 1)] = 0;
+}
+

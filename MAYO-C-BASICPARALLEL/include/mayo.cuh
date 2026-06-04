@@ -22,6 +22,13 @@
 #define BATCH (3U)
 
 
+#define F_TAIL_64                                                              \
+  { 8, 0, 2, 8 }
+
+__device__ __constant__ unsigned char d_f_tail_64[4] = {8, 0, 2, 8};
+
+#define F_TAIL_LEN 4
+
 /*
  MAYO2 - PARAMETERS
 */
