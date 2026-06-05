@@ -560,6 +560,15 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
     mul_add_mat_x_m_mat(PARAM_m_vec_limbs(p), Vdec, Pv, (uint64_t *)A, param_k, param_v, param_k);
     printElement((unsigned char *)A, param_k * param_k * PARAM_m_vec_limbs(p) * sizeof(uint64_t), "VP1V / A:");
 
+    compute_rhs(p, (uint64_t *)A, t, y);
+    printElement(y, param_m, "y:");
+
+    compute_A(p, Mtmp, A);
+    // printElement(A,MAYO_2_m * MAYO_2_A_cols, "A:");
+
+    decode(V + param_k * param_v_bytes, r, param_k * param_o);
+    printElement(r, param_k * param_o, "r:");
+
 
 
 
@@ -814,3 +823,4 @@ int mayo_verify(const mayo_params_t *p, const unsigned char *m, size_t mlen,
   }
   return MAYO_ERR; // bad signature
 }
+
