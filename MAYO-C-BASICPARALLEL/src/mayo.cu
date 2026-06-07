@@ -2,6 +2,8 @@
 
 #include "mayo.cuh"
 
+#define DEBUG_PRINT 0
+
 /* Definitions */
 int mayo2_sign_signature(unsigned char *sig,
               size_t *siglen, const unsigned char *m,
@@ -304,11 +306,15 @@ int mayo2_sign_signature(unsigned char *sig,
 
 
     alignas(32) sk_t sk[BATCH];
+    cudaEventRecord(start);
+
     ret = mayo_expand_sk(csk, sk);
+    #if DEBUG_PRINT
     printf("GPU O first: %02x\r\n", sk[0].O[0]);
     printf("GPU O last : %02x\r\n", sk[0].O[MAYO_2_v * MAYO_2_o - 1]);
     printf("GPU p first: %016llx\r\n", (unsigned long long)sk[0].p[0]);
     printf("GPU p last : %016llx\r\n", (unsigned long long)sk[0].p[p_limbs_per_sig - 1]);
+    #endif
 
     for (int i = 0; i < BATCH; i++)
     {
@@ -334,12 +340,13 @@ int mayo2_sign_signature(unsigned char *sig,
 
 
 
-
+    #if DEBUG_PRINT
     printf("\nmsg\n");
     for (size_t i = 0; i < mlen; i++) {
     printf("0x%02x, ", m[i]);
     }
     printf("\r\n");
+    #endif
 
 
     for(int i=0;i<BATCH;i++)
@@ -352,11 +359,11 @@ int mayo2_sign_signature(unsigned char *sig,
 
     shake256<<<BATCH,25>>>(d_tmp, MAYO_2_digest_bytes, d_m, mlen, 0);
 
-
     cudaMemcpy(h_digest,
             d_tmp,
             MAYO_2_digest_bytes * BATCH,
             cudaMemcpyDeviceToHost);
+
 
     int tmp_bytes =
         MAYO_2_digest_bytes +
@@ -386,7 +393,9 @@ int mayo2_sign_signature(unsigned char *sig,
             MAYO_2_sk_seed_bytes] = 0;
     }
 
+    #if DEBUG_PRINT
     printBatch(h_tmp, tmp_bytes, BATCH, "tmp:");
+    #endif
 
     cudaMemcpy(d_tmp, h_tmp, (MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*BATCH, cudaMemcpyHostToDevice);
  
@@ -413,11 +422,11 @@ int mayo2_sign_signature(unsigned char *sig,
 
     int blocks = (((MAYO_2_m  + 1)/2) + THREADS-1)/THREADS;
     decode<<<blocks*BATCH, THREADS>>>(d_tenc, d_t, MAYO_2_m, blocks,MAYO_2_m_bytes, MAYO_2_m);
-    cudaMemcpy(h_t, d_t, MAYO_2_m*BATCH, cudaMemcpyDeviceToHost);
 
     int sol_found = 0;
     int sol_batch = -1;
     int sol_ctr = -1;
+
     for (int ctr = 0; ctr < (256 + BATCH - 1) / BATCH; ctr++)
     {
         for (int b = 0; b < BATCH; b++)
@@ -635,10 +644,12 @@ int mayo2_sign_signature(unsigned char *sig,
 
         for (int b = 0; b < BATCH; b++)
         {
+            #if DEBUG_PRINT
             printf("ctr %d | Batch %d sample_solution return: %d\r\n",
                 ctr,
                 b,
                 h_sol_found[b]);
+            #endif
 
             if (h_sol_found[b])
             {
@@ -662,7 +673,8 @@ int mayo2_sign_signature(unsigned char *sig,
         ret = MAYO_ERR;
     }
     else
-    {
+    {   
+        #if DEBUG_PRINT
         printf("Solution found at ctr %d, batch %d\r\n", sol_ctr * BATCH + sol_batch, sol_batch);
 
         cudaMemcpy(h_x,
@@ -673,6 +685,7 @@ int mayo2_sign_signature(unsigned char *sig,
         printElement(h_x + sol_batch * x_stride,
                     ko,
                     "x solution:");
+        #endif
 
         int total_s = BATCH * MAYO_2_k * MAYO_2_n;
         int blocks_s = (total_s + THREADS - 1) / THREADS;
@@ -691,9 +704,11 @@ int mayo2_sign_signature(unsigned char *sig,
                 s_stride * BATCH,
                 cudaMemcpyDeviceToHost);
 
+        #if DEBUG_PRINT
         printElement(h_s + sol_batch * s_stride,
                     MAYO_2_k * MAYO_2_n,
                     "s:");
+        #endif
 
         encode(h_s + sol_batch * s_stride, sig, MAYO_2_k * MAYO_2_n);
 
@@ -705,7 +720,12 @@ int mayo2_sign_signature(unsigned char *sig,
     }
 
 
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&gpu_t, start, stop);
 
+    printf("GPU mayo2_sign_signature total time: %.6f ms\n", gpu_t);
+    printf("GPU mayo2_sign_signature time per batch: %.6f ms\n", gpu_t/BATCH);
     
 
     cudaFreeHost(h_msg);

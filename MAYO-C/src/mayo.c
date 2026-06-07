@@ -651,7 +651,20 @@ int mayo_sign(const mayo_params_t *p, unsigned char *sm, size_t *smlen,
   size_t siglen;
   printf("mayo_sign starts: \n");
   memmove(sm + param_sig_bytes, m, mlen);
+  struct timeval t1, t2;
+  double cpu_t;
+
+  gettimeofday(&t1, NULL);
+
   ret = mayo_sign_signature(p, sm, &siglen, sm + param_sig_bytes, mlen, csk);
+
+  gettimeofday(&t2, NULL);
+
+  cpu_t = (t2.tv_sec - t1.tv_sec) * 1000.0;
+  cpu_t += (t2.tv_usec - t1.tv_usec) / 1000.0;
+
+  printf("CPU mayo_sign_signature total time: %.6f ms\n", cpu_t);
+
   if (ret != MAYO_OK || siglen != (size_t)param_sig_bytes) {
     memset(sm, 0, siglen + mlen);
     goto err;

@@ -19,7 +19,7 @@
 #define THREADS (256)
 
 
-#define BATCH (3U)
+#define BATCH (128)
 
 
 #define F_TAIL_64                                                              \
