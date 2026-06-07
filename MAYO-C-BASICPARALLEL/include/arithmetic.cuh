@@ -28,7 +28,7 @@ uint64_t gf16_vec_mul(uint64_t in, uint8_t a)
           ^ ((in >> 3) & lsb_mask) * ((tab >> 24) & 0xf);
 }
 
-__device__ __forceinline__
+static __device__ __forceinline__
 uint8_t gf16_mul_scalar(uint8_t a, uint8_t b)
 {
     uint8_t r = 0;
@@ -56,13 +56,13 @@ uint8_t gf16_mul_scalar(uint8_t a, uint8_t b)
     return r & 0x0F;
 }
 
-__device__ __forceinline__
+static __device__ __forceinline__
 uint8_t mul_f(uint8_t a, uint8_t b)
 {
     return gf16_mul_scalar(a, b);
 }
 
-__device__ __forceinline__
+static __device__ __forceinline__
 void transpose_16x16_nibbles_gpu(uint64_t *A)
 {
     uint64_t in[16];
@@ -82,6 +82,106 @@ void transpose_16x16_nibbles_gpu(uint64_t *A)
 
     for (int i = 0; i < 16; i++) {
         A[i] = out[i];
+    }
+}
+
+static __device__ __forceinline__
+uint64_t ct_compare_64_device(uint64_t a, uint64_t b)
+{
+    uint64_t x = a ^ b;
+
+    x |= x >> 32;
+    x |= x >> 16;
+    x |= x >> 8;
+    x |= x >> 4;
+    x |= x >> 2;
+    x |= x >> 1;
+
+    return (uint64_t)(0ULL - (x & 1ULL));
+}
+
+static __device__ __forceinline__
+uint8_t ct_compare_8_device(uint8_t a, uint8_t b)
+{
+    uint8_t x = a ^ b;
+
+    x |= x >> 4;
+    x |= x >> 2;
+    x |= x >> 1;
+
+    return (uint8_t)(0 - (x & 1));
+}
+
+static __device__ __forceinline__
+uint64_t ct_64_is_greater_than_device(uint64_t a, uint64_t b)
+{
+    return (uint64_t)(0ULL - (uint64_t)(a > b));
+}
+
+static __device__ __forceinline__
+uint8_t inverse_f_device(uint8_t a)
+{
+    a &= 0x0F;
+
+    if (a == 0) {
+        return 0;
+    }
+
+    for (uint8_t x = 1; x < 16; x++) {
+        if (mul_f(a, x) == 1) {
+            return x;
+        }
+    }
+
+    return 0;
+}
+
+static __device__ __forceinline__
+uint8_t m_extract_element_device(const uint64_t *row, int idx)
+{
+    return (row[idx / 16] >> (4 * (idx % 16))) & 0x0F;
+}
+
+static __device__ __forceinline__
+void vec_mul_add_u64_device(int row_len,
+                            const uint64_t *in,
+                            uint8_t a,
+                            uint64_t *acc)
+{
+    for (int i = 0; i < row_len; i++) {
+        acc[i] ^= gf16_vec_mul(in[i], a);
+    }
+}
+
+static __device__ __forceinline__
+uint64_t mul_fx8_device(uint8_t u, uint64_t x)
+{
+    return gf16_vec_mul(x, u);
+}
+
+static __device__ __forceinline__
+void ef_pack_m_vec_device(const unsigned char *in,
+                          uint64_t *out,
+                          int ncols)
+{
+    int row_len = (ncols + 15) / 16;
+
+    for (int i = 0; i < row_len; i++) {
+        out[i] = 0;
+    }
+
+    for (int i = 0; i < ncols; i++) {
+        out[i / 16] |= ((uint64_t)(in[i] & 0x0F)) << (4 * (i % 16));
+    }
+}
+
+static __device__ __forceinline__
+void ef_unpack_m_vec_device(int row_len,
+                            const uint64_t *in,
+                            unsigned char *out)
+{
+    for (int i = 0; i < row_len * 16; i++) {
+        out[i] = (in[i / 16] >> (4 * (i % 16))) & 0x0F;
     }
 }
 

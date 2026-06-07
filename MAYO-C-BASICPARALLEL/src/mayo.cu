@@ -9,6 +9,18 @@ int mayo2_sign_signature(unsigned char *sig,
 
 int mayo_expand_sk(const unsigned char *csk, sk_t *sk);
 
+static void encode(const unsigned char *m, unsigned char *menc, int mlen) {
+  int i;
+  for (i = 0; i < mlen / 2; ++i, m += 2) {
+    menc[i] = (*m) | (*(m + 1) << 4);
+  }
+
+  if (mlen % 2 == 1) {
+    menc[i] = (*m);
+  }
+}
+
+
 
 __global__ void decode(const unsigned char *m,
                        unsigned char *mdec,
@@ -78,6 +90,27 @@ void compute_A_decode(const uint64_t *A_work,
 __global__
 void zero_last_column_A(unsigned char *A);
 
+__global__
+void sample_solution_prepare(const unsigned char *r,
+                             unsigned char *x,
+                             unsigned char *A,
+                             const unsigned char *y,
+                             unsigned char *Ar);
+
+__device__
+void EF_device(unsigned char *A);
+
+__global__
+void sample_solution_finish(unsigned char *A,
+                            unsigned char *x,
+                            unsigned char *sol_found);
+
+__global__
+void build_s(const unsigned char *O,
+                    const unsigned char *Vdec,
+                    const unsigned char *x,
+                    unsigned char *s);
+
 void printElement(unsigned char* element, int n, const char* title)
 {
   printf("\r\n");
@@ -137,10 +170,13 @@ int mayo2_sign(unsigned char *sm,
 
     memmove(sm + param_sig_bytes, m, mlen);
     ret = mayo2_sign_signature(sm, &siglen, sm + param_sig_bytes, mlen, csk);
+    if (ret != MAYO_OK || siglen != (size_t)param_sig_bytes) {
+        memset(sm, 0, siglen + mlen);
+        return MAYO_ERR;
+    }
 
+    *smlen = siglen + mlen;
     return ret;
-    
-
 }
 
 int mayo2_sign_signature(unsigned char *sig,
@@ -192,6 +228,9 @@ int mayo2_sign_signature(unsigned char *sig,
     unsigned char *d_A_out;
     unsigned char *h_A_out;
 
+    unsigned char *h_x, *d_x;
+    unsigned char *h_Ar, *d_Ar;
+
     int pairs = (MAYO_2_k + 1) * MAYO_2_k / 2;
     int A_width = ((MAYO_2_o * MAYO_2_k + 15) / 16) * 16;
     int A_work_limbs_per_batch =
@@ -202,6 +241,17 @@ int mayo2_sign_signature(unsigned char *sig,
 
     unsigned char *h_r, *d_r;
     int r_per_batch = MAYO_2_k * MAYO_2_o;
+
+    unsigned char *h_sol_found, *d_sol_found;
+
+    int ko = MAYO_2_k * MAYO_2_o;
+    int x_stride = MAYO_2_k * MAYO_2_n;
+
+    unsigned char *h_O_batch, *d_O_batch;
+    unsigned char *h_s, *d_s;
+
+    int s_stride = MAYO_2_k * MAYO_2_n;
+    int O_stride = MAYO_2_v * MAYO_2_o;
 
     cudaMallocHost((void**)&h_msg, mlen*BATCH);
     cudaMallocHost((void**)&h_tmp,(MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*BATCH);
@@ -218,6 +268,11 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaMallocHost((void**)&h_y, MAYO_2_m * BATCH);
     cudaMallocHost((void **)&h_A_out, A_out_bytes_per_batch * BATCH);
     cudaMallocHost((void**)&h_r, MAYO_2_k * MAYO_2_o * BATCH);
+    cudaMallocHost((void**)&h_x,  x_stride * BATCH);
+    cudaMallocHost((void**)&h_Ar, MAYO_2_m * BATCH);
+    cudaMallocHost((void**)&h_sol_found, BATCH);
+    cudaMallocHost((void**)&h_O_batch, O_stride * BATCH);
+    cudaMallocHost((void**)&h_s, s_stride * BATCH);
 
 
     cudaMalloc((void**)&d_tmp,(MAYO_2_digest_bytes + MAYO_2_salt_bytes + MAYO_2_sk_seed_bytes + 1)*BATCH);
@@ -235,25 +290,45 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaMalloc((void **)&d_A_work, A_work_limbs_per_batch * sizeof(uint64_t) * BATCH);
     cudaMalloc((void **)&d_A_out, A_out_bytes_per_batch * BATCH);
     cudaMalloc((void**)&d_r, MAYO_2_k * MAYO_2_o * BATCH);
+    cudaMalloc((void**)&d_x,  x_stride * BATCH);
+    cudaMalloc((void**)&d_Ar, MAYO_2_m * BATCH);
+    cudaMalloc((void**)&d_sol_found, BATCH);
+    cudaMalloc((void**)&d_O_batch, O_stride * BATCH);
+    cudaMalloc((void**)&d_s, s_stride * BATCH);
 
+    
+
+   
     
 
 
 
     alignas(32) sk_t sk[BATCH];
     ret = mayo_expand_sk(csk, sk);
+    printf("GPU O first: %02x\r\n", sk[0].O[0]);
+    printf("GPU O last : %02x\r\n", sk[0].O[MAYO_2_v * MAYO_2_o - 1]);
+    printf("GPU p first: %016llx\r\n", (unsigned long long)sk[0].p[0]);
+    printf("GPU p last : %016llx\r\n", (unsigned long long)sk[0].p[p_limbs_per_sig - 1]);
 
     for (int i = 0; i < BATCH; i++)
     {
         memcpy(h_P_batch + i * p_limbs_per_sig,
                sk[i].p,
                p_limbs_per_sig * sizeof(uint64_t));
+        memcpy(h_O_batch + i * MAYO_2_v * MAYO_2_o,
+            sk[i].O,
+            MAYO_2_v * MAYO_2_o);
     }
 
     cudaMemcpy(d_P_batch,
                h_P_batch,
                p_limbs_per_sig * sizeof(uint64_t) * BATCH,
                cudaMemcpyHostToDevice);
+
+    cudaMemcpy(d_O_batch,
+           h_O_batch,
+           MAYO_2_v * MAYO_2_o * BATCH,
+           cudaMemcpyHostToDevice);
 
     uint64_t *d_L = d_P_batch + p1_limbs;
 
@@ -340,186 +415,294 @@ int mayo2_sign_signature(unsigned char *sig,
     decode<<<blocks*BATCH, THREADS>>>(d_tenc, d_t, MAYO_2_m, blocks,MAYO_2_m_bytes, MAYO_2_m);
     cudaMemcpy(h_t, d_t, MAYO_2_m*BATCH, cudaMemcpyDeviceToHost);
 
-    shake256<<<BATCH, 25>>>(d_V, MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes, d_tmp,
-             tmp_bytes, 0);
-
-    cudaMemcpy(h_V, d_V, (MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes)*BATCH, cudaMemcpyDeviceToHost);
-
-    int V_blocks = (((MAYO_2_v + 1) / 2) + THREADS - 1) / THREADS;
-
-    int V_bytes_per_batch = MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes;
-    int Vdec_per_batch    = MAYO_2_k * MAYO_2_v;
-
-    for (int i = 0; i < MAYO_2_k; i++)
+    int sol_found = 0;
+    int sol_batch = -1;
+    int sol_ctr = -1;
+    for (int ctr = 0; ctr < (256 + BATCH - 1) / BATCH; ctr++)
     {
-        decode<<<V_blocks * BATCH, THREADS>>>(
-            d_V + i * MAYO_2_v_bytes,
-            d_Vdec + i * MAYO_2_v,
-            MAYO_2_v,
-            V_blocks,
-            V_bytes_per_batch,
-            Vdec_per_batch
+        for (int b = 0; b < BATCH; b++)
+        {
+            int current_ctr = ctr * BATCH + b;
+            h_tmp[b * tmp_bytes + tmp_bytes - 1] = (unsigned char)(current_ctr <= 255 ? current_ctr : 255);
+        }
+
+        cudaMemcpy(d_tmp,
+                h_tmp,
+                tmp_bytes * BATCH,
+                cudaMemcpyHostToDevice);
+
+        
+        shake256<<<BATCH, 25>>>(
+            d_V,
+            MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes,
+            d_tmp,
+            tmp_bytes,
+            0
         );
+
+        
+        int V_blocks = (((MAYO_2_v + 1) / 2) + THREADS - 1) / THREADS;
+
+        int V_bytes_per_batch = MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes;
+        int Vdec_per_batch    = MAYO_2_k * MAYO_2_v;
+
+        for (int i = 0; i < MAYO_2_k; i++)
+        {
+            decode<<<V_blocks * BATCH, THREADS>>>(
+                d_V + i * MAYO_2_v_bytes,
+                d_Vdec + i * MAYO_2_v,
+                MAYO_2_v,
+                V_blocks,
+                V_bytes_per_batch,
+                Vdec_per_batch
+            );
+        }
+
+       
+        cudaMemset(d_VL,
+                0,
+                MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
+
+        int total_VL = BATCH * MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs;
+        int blocks_VL = (total_VL + THREADS - 1) / THREADS;
+
+        mul_add_mat_x_m_mat<<<blocks_VL, THREADS>>>(
+            MAYO_2_m_vec_limbs,
+            d_Vdec,
+            d_L,
+            d_VL,
+            MAYO_2_k,
+            MAYO_2_v,
+            MAYO_2_o,
+            MAYO_2_k * MAYO_2_v,
+            p_limbs_per_sig,
+            MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs
+        );
+
+        
+        cudaMemset(d_Pv,
+                0,
+                MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
+
+        int total_Pv = BATCH * MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs;
+        int blocks_Pv = (total_Pv + THREADS - 1) / THREADS;
+
+        P1_times_Vt<<<blocks_Pv, THREADS>>>(
+            d_P_batch,
+            d_Vdec,
+            d_Pv,
+            p_limbs_per_sig,
+            MAYO_2_k * MAYO_2_v,
+            MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs
+        );
+
+        
+        cudaMemset(d_A,
+                0,
+                MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
+
+        int total_A = BATCH * MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs;
+        int blocks_A = (total_A + THREADS - 1) / THREADS;
+
+        mul_add_mat_x_m_mat<<<blocks_A, THREADS>>>(
+            MAYO_2_m_vec_limbs,
+            d_Vdec,
+            d_Pv,
+            (uint64_t *)d_A,
+            MAYO_2_k,
+            MAYO_2_v,
+            MAYO_2_k,
+            MAYO_2_k * MAYO_2_v,
+            MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs,
+            MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs
+        );
+
+        
+        compute_rhs_finegrain<<<BATCH, MAYO_2_m_vec_limbs>>>(
+            (uint64_t *)d_A,
+            d_t,
+            d_y
+        );
+
+        
+        cudaMemset(d_A_work,
+                0,
+                A_work_limbs_per_batch * sizeof(uint64_t) * BATCH);
+
+        cudaMemset(d_A_out,
+                0,
+                A_out_bytes_per_batch * BATCH);
+
+        int total_build =
+            BATCH *
+            pairs *
+            MAYO_2_o *
+            MAYO_2_m_vec_limbs *
+            2;
+
+        int blocks_build = (total_build + THREADS - 1) / THREADS;
+
+        compute_A_build<<<blocks_build, THREADS>>>(
+            d_VL,
+            d_A_work
+        );
+
+        int transpose_blocks_per_batch = A_work_limbs_per_batch / 16;
+        int total_transpose = BATCH * transpose_blocks_per_batch;
+        int blocks_transpose = (total_transpose + THREADS - 1) / THREADS;
+
+        compute_A_transpose<<<blocks_transpose, THREADS>>>(
+            d_A_work
+        );
+
+        int total_reduce =
+            BATCH *
+            (A_width / 16) *
+            pairs;
+
+        int blocks_reduce = (total_reduce + THREADS - 1) / THREADS;
+
+        compute_A_reduce<<<blocks_reduce, THREADS>>>(
+            d_A_work
+        );
+
+        int total_decode =
+            BATCH *
+            MAYO_2_m *
+            (MAYO_2_A_cols - 1);
+
+        int blocks_decode = (total_decode + THREADS - 1) / THREADS;
+
+        compute_A_decode<<<blocks_decode, THREADS>>>(
+            d_A_work,
+            d_A_out
+        );
+
+        
+        int total_zero = BATCH * MAYO_2_m;
+        int blocks_zero = (total_zero + THREADS - 1) / THREADS;
+
+        zero_last_column_A<<<blocks_zero, THREADS>>>(
+            d_A_out
+        );
+
+        
+        int r_blocks = (((MAYO_2_k * MAYO_2_o + 1) / 2) + THREADS - 1) / THREADS;
+
+        decode<<<r_blocks * BATCH, THREADS>>>(
+            d_V + MAYO_2_k * MAYO_2_v_bytes,
+            d_r,
+            MAYO_2_k * MAYO_2_o,
+            r_blocks,
+            MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes,
+            MAYO_2_k * MAYO_2_o
+        );
+
+        
+        int total_prepare = BATCH * MAYO_2_m;
+
+        if (BATCH * ko > total_prepare) {
+            total_prepare = BATCH * ko;
+        }
+
+        int blocks_prepare = (total_prepare + THREADS - 1) / THREADS;
+
+        cudaMemset(d_x, 0, x_stride * BATCH);
+        cudaMemset(d_Ar, 0, MAYO_2_m * BATCH);
+        cudaMemset(d_sol_found, 0, BATCH);
+
+        sample_solution_prepare<<<blocks_prepare, THREADS>>>(
+            d_r,
+            d_x,
+            d_A_out,
+            d_y,
+            d_Ar
+        );
+
+        
+        sample_solution_finish<<<BATCH, 1>>>(
+            d_A_out,
+            d_x,
+            d_sol_found
+        );
+
+        cudaDeviceSynchronize();
+
+        cudaMemcpy(h_sol_found,
+                d_sol_found,
+                BATCH,
+                cudaMemcpyDeviceToHost);
+
+        for (int b = 0; b < BATCH; b++)
+        {
+            printf("ctr %d | Batch %d sample_solution return: %d\r\n",
+                ctr,
+                b,
+                h_sol_found[b]);
+
+            if (h_sol_found[b])
+            {
+                sol_found = 1;
+                sol_batch = b;
+                sol_ctr = ctr;
+                break;
+            }
+        }
+
+        if (sol_found)
+        {
+            break;
+        }
+
+        
     }
 
+    if (!sol_found)
+    {
+        ret = MAYO_ERR;
+    }
+    else
+    {
+        printf("Solution found at ctr %d, batch %d\r\n", sol_ctr * BATCH + sol_batch, sol_batch);
 
-    cudaMemset(d_VL,
-           0,
-           MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
+        cudaMemcpy(h_x,
+                d_x,
+                x_stride * BATCH,
+                cudaMemcpyDeviceToHost);
 
+        printElement(h_x + sol_batch * x_stride,
+                    ko,
+                    "x solution:");
 
-    int total_VL = BATCH * MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs;
-    int blocks_VL = (total_VL + THREADS - 1) / THREADS;
+        int total_s = BATCH * MAYO_2_k * MAYO_2_n;
+        int blocks_s = (total_s + THREADS - 1) / THREADS;
 
-    mul_add_mat_x_m_mat<<<blocks_VL, THREADS>>>(
-        MAYO_2_m_vec_limbs,
-        d_Vdec,
-        d_L,
-        d_VL,
-        MAYO_2_k,
-        MAYO_2_v,
-        MAYO_2_o,
-        MAYO_2_k * MAYO_2_v,
-        p_limbs_per_sig,
-        MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs
-    );
-
-    cudaDeviceSynchronize();
-
-    cudaMemcpy(h_VL, d_VL, MAYO_2_k * MAYO_2_o * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH, cudaMemcpyDeviceToHost);
-
-
-    uint64_t *d_P1 = d_P_batch;
-
-    cudaMemset(d_Pv,
-            0,
-            MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
-
-    int total_Pv = BATCH * MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs;
-    int blocks_Pv = (total_Pv + THREADS - 1) / THREADS;
-
-    P1_times_Vt<<<blocks_Pv, THREADS>>>(
-        d_P1,
-        d_Vdec,
-        d_Pv,
-        p_limbs_per_sig,
-        MAYO_2_k * MAYO_2_v,
-        MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs
-    );
-
-    cudaDeviceSynchronize();
-
-    cudaMemset(d_A, 0, MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
-
-    int total_A = BATCH * MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs;
-    int blocks_A = (total_A + THREADS - 1) / THREADS;
-
-    mul_add_mat_x_m_mat<<<blocks_A, THREADS>>>(
-        MAYO_2_m_vec_limbs,
-        d_Vdec,
-        d_Pv,
-        (uint64_t *)d_A,
-        MAYO_2_k,
-        MAYO_2_v,
-        MAYO_2_k,
-        MAYO_2_k * MAYO_2_v,
-        MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs,
-        MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs
-    );
-
-    cudaDeviceSynchronize();
-
-    cudaMemcpy(h_A, d_A, MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH, cudaMemcpyDeviceToHost);
-
-    printBatch((unsigned char *)h_A, MAYO_2_k * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t), BATCH, "VP1V / A:");
-
-
-    compute_rhs_finegrain<<<BATCH, MAYO_2_m_vec_limbs>>>(
-        (uint64_t *)d_A,
-        d_t,
-        d_y
+        build_s<<<blocks_s, THREADS>>>(
+            d_O_batch,
+            d_Vdec,
+            d_x,
+            d_s
         );
 
-    cudaDeviceSynchronize();
+        cudaDeviceSynchronize();
 
-    cudaMemcpy(h_y,
-            d_y,
-            MAYO_2_m * BATCH,
-            cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_s,
+                d_s,
+                s_stride * BATCH,
+                cudaMemcpyDeviceToHost);
 
+        printElement(h_s + sol_batch * s_stride,
+                    MAYO_2_k * MAYO_2_n,
+                    "s:");
 
-    int total_build =
-    BATCH *
-    pairs *
-    MAYO_2_o *
-    MAYO_2_m_vec_limbs *
-    2;
+        encode(h_s + sol_batch * s_stride, sig, MAYO_2_k * MAYO_2_n);
 
-    int blocks_build = (total_build + THREADS - 1) / THREADS;
+        memcpy(sig + MAYO_2_sig_bytes - MAYO_2_salt_bytes,
+               h_salt + sol_batch * MAYO_2_salt_bytes,
+               MAYO_2_salt_bytes);
 
-    compute_A_build<<<blocks_build, THREADS>>>(
-        d_VL,
-        d_A_work
-    );
-
-    int transpose_blocks_per_batch = A_work_limbs_per_batch / 16;
-    int total_transpose = BATCH * transpose_blocks_per_batch;
-    int blocks_transpose = (total_transpose + THREADS - 1) / THREADS;
-
-    compute_A_transpose<<<blocks_transpose, THREADS>>>(
-        d_A_work
-    );
-
-    int total_reduce =
-    BATCH *
-    (A_width / 16) *
-    pairs;
-
-    int blocks_reduce = (total_reduce + THREADS - 1) / THREADS;
-
-    compute_A_reduce<<<blocks_reduce, THREADS>>>(
-        d_A_work
-    );
-
-    int total_decode =
-    BATCH *
-    MAYO_2_m *
-    (MAYO_2_A_cols - 1);
-
-    int blocks_decode = (total_decode + THREADS - 1) / THREADS;
-
-    compute_A_decode<<<blocks_decode, THREADS>>>(
-        d_A_work,
-        d_A_out
-    );
-
-    int total_zero = BATCH * MAYO_2_m;
-    int blocks_zero = (total_zero + THREADS - 1) / THREADS;
-
-    zero_last_column_A<<<blocks_zero, THREADS>>>(d_A_out);
-
-    int r_blocks = (((MAYO_2_k * MAYO_2_o + 1) / 2) + THREADS - 1) / THREADS;
-
-    decode<<<r_blocks * BATCH, THREADS>>>(
-        d_V + MAYO_2_k * MAYO_2_v_bytes,
-        d_r,
-        MAYO_2_k * MAYO_2_o,
-        r_blocks,
-        MAYO_2_k * MAYO_2_v_bytes + MAYO_2_r_bytes,
-        MAYO_2_k * MAYO_2_o
-    );
-
-    cudaMemcpy(h_r,
-           d_r,
-           MAYO_2_k * MAYO_2_o * BATCH,
-           cudaMemcpyDeviceToHost);
-
-    printBatch(h_r,
-           MAYO_2_k * MAYO_2_o,
-           BATCH,
-           "r:");
-
-    
+        *siglen = MAYO_2_sig_bytes;
+    }
 
 
 
@@ -540,6 +723,11 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaFreeHost(h_A);
     cudaFreeHost(h_A_out);
     cudaFreeHost(h_r);
+    cudaFreeHost(h_x);
+    cudaFreeHost(h_Ar);
+    cudaFreeHost(h_sol_found);
+    cudaFreeHost(h_O_batch);
+    cudaFreeHost(h_s);
 
     
 
@@ -558,6 +746,15 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaFree(d_A_work);
     cudaFree(d_A_out);
     cudaFree(d_r);
+    cudaFree(d_x);
+    cudaFree(d_Ar);
+    cudaFree(d_sol_found);
+    cudaFree(d_O_batch);
+    cudaFree(d_s);
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    
 
 
     return ret;
@@ -1395,5 +1592,334 @@ void zero_last_column_A(unsigned char *A)
     unsigned char *A_b = A + batch * A_bytes_per_batch;
 
     A_b[row * A_cols + (A_cols - 1)] = 0;
+}
+
+__global__
+void sample_solution_prepare(const unsigned char *r,
+                             unsigned char *x,
+                             unsigned char *A,
+                             const unsigned char *y,
+                             unsigned char *Ar)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    const int ko = MAYO_2_k * MAYO_2_o;
+    const int m = MAYO_2_m;
+    const int A_cols = MAYO_2_k * MAYO_2_o + 1;
+    const int x_stride = MAYO_2_k * MAYO_2_n;
+
+    int total_x = BATCH * ko;
+    int total_rows = BATCH * m;
+
+    if (tid < total_x) {
+        int batch = tid / ko;
+        int idx   = tid % ko;
+
+        x[batch * x_stride + idx] = r[batch * ko + idx];
+    }
+
+    if (tid < total_rows) {
+        int batch = tid / m;
+        int row   = tid % m;
+
+        unsigned char *A_b =
+            A + batch * m * A_cols;
+
+        const unsigned char *r_b =
+            r + batch * ko;
+
+        const unsigned char *y_b =
+            y + batch * m;
+
+        unsigned char *Ar_b =
+            Ar + batch * m;
+
+        A_b[row * A_cols + (A_cols - 1)] = 0;
+
+        unsigned char acc = 0;
+
+        for (int col = 0; col < ko; col++) {
+            unsigned char a = A_b[row * A_cols + col] & 0x0F;
+            unsigned char b = r_b[col] & 0x0F;
+
+            acc ^= mul_f(a, b);
+        }
+
+        Ar_b[row] = acc;
+
+        A_b[row * A_cols + (A_cols - 1)] =
+            (y_b[row] ^ acc) & 0x0F;
+    }
+}
+
+__device__
+void EF_device(unsigned char *A)
+{
+    const int nrows = MAYO_2_m;
+    const int ncols = MAYO_2_A_cols;
+    const int row_len = (ncols + 15) / 16;
+
+    uint64_t pivot_row[(MAYO_2_k * MAYO_2_o + 1 + 15) / 16];
+    uint64_t pivot_row2[(MAYO_2_k * MAYO_2_o + 1 + 15) / 16];
+
+    uint64_t packed_A[((MAYO_2_k * MAYO_2_o + 1 + 15) / 16) * MAYO_2_m];
+
+    for (int i = 0; i < row_len * nrows; i++) {
+        packed_A[i] = 0;
+    }
+
+    for (int i = 0; i < nrows; i++) {
+        ef_pack_m_vec_device(A + i * ncols,
+                             packed_A + i * row_len,
+                             ncols);
+    }
+
+    int pivot_row_idx = 0;
+
+    for (int pivot_col = 0; pivot_col < ncols; pivot_col++) {
+        int pivot_row_lower_bound = pivot_col + nrows - ncols;
+
+        if (pivot_row_lower_bound < 0) {
+            pivot_row_lower_bound = 0;
+        }
+
+        int pivot_row_upper_bound = pivot_col;
+
+        if (pivot_row_upper_bound > nrows - 1) {
+            pivot_row_upper_bound = nrows - 1;
+        }
+
+        for (int i = 0; i < row_len; i++) {
+            pivot_row[i] = 0;
+            pivot_row2[i] = 0;
+        }
+
+        unsigned char pivot = 0;
+        uint64_t pivot_is_zero = 0xFFFFFFFFFFFFFFFFULL;
+
+        int row_search_upper = pivot_row_upper_bound + 32;
+
+        if (row_search_upper > nrows - 1) {
+            row_search_upper = nrows - 1;
+        }
+
+        for (int row = pivot_row_lower_bound; row <= row_search_upper; row++) {
+            uint64_t is_pivot_row =
+                ~ct_compare_64_device((uint64_t)row,
+                                      (uint64_t)pivot_row_idx);
+
+            uint64_t below_pivot_row =
+                ct_64_is_greater_than_device((uint64_t)row,
+                                             (uint64_t)pivot_row_idx);
+
+            for (int j = 0; j < row_len; j++) {
+                pivot_row[j] ^=
+                    (is_pivot_row | (below_pivot_row & pivot_is_zero)) &
+                    packed_A[row * row_len + j];
+            }
+
+            pivot = m_extract_element_device(pivot_row, pivot_col);
+
+            pivot_is_zero =
+                ~ct_compare_64_device((uint64_t)pivot, 0);
+        }
+
+        unsigned char inverse = inverse_f_device(pivot);
+
+        vec_mul_add_u64_device(row_len,
+                               pivot_row,
+                               inverse,
+                               pivot_row2);
+
+        for (int row = pivot_row_lower_bound; row <= pivot_row_upper_bound; row++) {
+            uint64_t do_copy =
+                ~ct_compare_64_device((uint64_t)row,
+                                      (uint64_t)pivot_row_idx) &
+                ~pivot_is_zero;
+
+            uint64_t do_not_copy = ~do_copy;
+
+            for (int col = 0; col < row_len; col++) {
+                packed_A[row * row_len + col] =
+                    (do_not_copy & packed_A[row * row_len + col]) ^
+                    (do_copy & pivot_row2[col]);
+            }
+        }
+
+        for (int row = pivot_row_lower_bound; row < nrows; row++) {
+            unsigned char below_pivot =
+                (unsigned char)(row > pivot_row_idx);
+
+            unsigned char elt_to_elim =
+                m_extract_element_device(packed_A + row * row_len,
+                                         pivot_col);
+
+            vec_mul_add_u64_device(row_len,
+                                   pivot_row2,
+                                   below_pivot * elt_to_elim,
+                                   packed_A + row * row_len);
+        }
+
+        if (pivot_is_zero == 0) {
+            pivot_row_idx++;
+        }
+    }
+
+    unsigned char temp[MAYO_2_k * MAYO_2_o + 1 + 15];
+
+    for (int i = 0; i < nrows; i++) {
+        ef_unpack_m_vec_device(row_len,
+                               packed_A + i * row_len,
+                               temp);
+
+        for (int j = 0; j < ncols; j++) {
+            A[i * ncols + j] = temp[j];
+        }
+    }
+}
+
+__global__
+void sample_solution_finish(unsigned char *A,
+                            unsigned char *x,
+                            unsigned char *sol_found)
+{
+    int batch = blockIdx.x;
+
+    const int m = MAYO_2_m;
+    const int ko = MAYO_2_k * MAYO_2_o;
+    const int A_cols = MAYO_2_k * MAYO_2_o + 1;
+    const int x_stride = MAYO_2_k * MAYO_2_n;
+
+    unsigned char *A_b =
+        A + batch * m * A_cols;
+
+    unsigned char *x_b =
+        x + batch * x_stride;
+
+    EF_device(A_b);
+
+    unsigned char full_rank = 0;
+
+    for (int i = 0; i < A_cols - 1; i++) {
+        full_rank |= A_b[(m - 1) * A_cols + i];
+    }
+
+    if (full_rank == 0) {
+        sol_found[batch] = 0;
+        return;
+    }
+
+    for (int row = m - 1; row >= 0; row--) {
+        unsigned char finished = 0;
+
+        int col_upper_bound = row + (32 / (m - row));
+
+        if (col_upper_bound > ko) {
+            col_upper_bound = ko;
+        }
+
+        for (int col = row; col <= col_upper_bound; col++) {
+            unsigned char correct_column =
+                ct_compare_8_device(A_b[row * A_cols + col], 0) &
+                ~finished;
+
+            unsigned char u =
+                correct_column & A_b[row * A_cols + A_cols - 1];
+
+            x_b[col] ^= u;
+
+            for (int i = 0; i < row; i += 8) {
+                uint64_t tmp =
+                    ((uint64_t)A_b[(i    ) * A_cols + col] <<  0) ^
+                    ((uint64_t)A_b[(i + 1) * A_cols + col] <<  8) ^
+                    ((uint64_t)A_b[(i + 2) * A_cols + col] << 16) ^
+                    ((uint64_t)A_b[(i + 3) * A_cols + col] << 24) ^
+                    ((uint64_t)A_b[(i + 4) * A_cols + col] << 32) ^
+                    ((uint64_t)A_b[(i + 5) * A_cols + col] << 40) ^
+                    ((uint64_t)A_b[(i + 6) * A_cols + col] << 48) ^
+                    ((uint64_t)A_b[(i + 7) * A_cols + col] << 56);
+
+                tmp = mul_fx8_device(u, tmp);
+
+                A_b[(i    ) * A_cols + A_cols - 1] ^= (tmp      ) & 0xF;
+                A_b[(i + 1) * A_cols + A_cols - 1] ^= (tmp >>  8) & 0xF;
+                A_b[(i + 2) * A_cols + A_cols - 1] ^= (tmp >> 16) & 0xF;
+                A_b[(i + 3) * A_cols + A_cols - 1] ^= (tmp >> 24) & 0xF;
+                A_b[(i + 4) * A_cols + A_cols - 1] ^= (tmp >> 32) & 0xF;
+                A_b[(i + 5) * A_cols + A_cols - 1] ^= (tmp >> 40) & 0xF;
+                A_b[(i + 6) * A_cols + A_cols - 1] ^= (tmp >> 48) & 0xF;
+                A_b[(i + 7) * A_cols + A_cols - 1] ^= (tmp >> 56) & 0xF;
+            }
+
+            finished |= correct_column;
+        }
+    }
+
+    sol_found[batch] = 1;
+}
+
+__global__
+void build_s(const unsigned char *O,
+             const unsigned char *Vdec,
+             const unsigned char *x,
+             unsigned char *s)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    const int k = MAYO_2_k;
+    const int n = MAYO_2_n;
+    const int o = MAYO_2_o;
+    const int v = MAYO_2_v;
+
+    const int O_stride    = MAYO_2_v * MAYO_2_o;
+    const int Vdec_stride = MAYO_2_k * MAYO_2_v;
+    const int x_stride    = MAYO_2_k * MAYO_2_n;
+    const int s_stride    = MAYO_2_k * MAYO_2_n;
+
+    int total = BATCH * k * n;
+
+    if (tid >= total) {
+        return;
+    }
+
+    int batch = tid / (k * n);
+    int local = tid % (k * n);
+
+    int i   = local / n;   // 0..k-1
+    int pos = local % n;   // 0..n-1
+
+    const unsigned char *O_b =
+        O + batch * O_stride;
+
+    const unsigned char *Vdec_b =
+        Vdec + batch * Vdec_stride;
+
+    const unsigned char *x_b =
+        x + batch * x_stride;
+
+    unsigned char *s_b =
+        s + batch * s_stride;
+
+    const unsigned char *x_i =
+        x_b + i * o;
+
+    if (pos < v) {
+        unsigned char Ox = 0;
+
+        for (int j = 0; j < o; j++) {
+            unsigned char a = O_b[pos * o + j] & 0x0F;
+            unsigned char b = x_i[j] & 0x0F;
+
+            Ox ^= mul_f(a, b);
+        }
+
+        unsigned char vi = Vdec_b[i * v + pos] & 0x0F;
+
+        s_b[i * n + pos] = (vi ^ Ox) & 0x0F;
+    } else {
+        int oil_pos = pos - v;
+
+        s_b[i * n + pos] = x_i[oil_pos] & 0x0F;
+    }
 }
 

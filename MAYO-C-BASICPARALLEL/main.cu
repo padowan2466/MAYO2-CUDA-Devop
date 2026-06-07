@@ -37,9 +37,18 @@ int main()
     printf("Start sign\r\n");
 
     res = mayo2_sign(sig, &smlen, msg, msglen, sk);
+    printf("Sign result: %d, smlen: %ld\r\n", res, (long)smlen);
 
+    printf("Signature:\n");
+    for (int i = 0; i < MAYO_2_sig_bytes; i++) {
+        printf("%02x, ", sig[i]);
+    }
+    printf("\nMessage:\n");
+    for (int i = 0; i < msglen; i++) {
+        printf("%02x, ", sig[MAYO_2_sig_bytes + i]);
+    }
+    printf("\n");
 
-
-
+    free(sig);
     return 0;
 }
