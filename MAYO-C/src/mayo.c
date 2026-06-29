@@ -302,8 +302,11 @@ static void expand_P1_P2(const mayo_params_t *p, uint64_t *P,
 #ifndef ENABLE_PARAMS_DYNAMIC
   (void)p;
 #endif
+  printf("%d\r\n", PARAM_pk_seed_bytes(p));
+  printElement((unsigned char*)seed_pk, PARAM_pk_seed_bytes(p), "seed_pk:");
   PK_PRF((unsigned char *)P, PARAM_P1_bytes(p) + PARAM_P2_bytes(p), seed_pk,
          PARAM_pk_seed_bytes(p));
+    printElement((unsigned char *)P, PARAM_P1_bytes(p) + PARAM_P2_bytes(p),"P:");
 
   unpack_m_vecs((unsigned char *)P, P,
                 (PARAM_P1_limbs(p) + PARAM_P2_limbs(p)) / PARAM_m_vec_limbs(p),
@@ -428,7 +431,6 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
   struct timeval t1, t2;
   double cpu_t;
 
-  gettimeofday(&t1, NULL);
   ret = mayo_expand_sk(p, csk, &sk);
   printf("O first: %02x\r\n", sk.O[0]);
   printf("O last : %02x\r\n", sk.O[PARAM_v(p) * PARAM_o(p) - 1]);
@@ -467,12 +469,8 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
     printf("0x%02x, ", m[i]);
   }
   // hash message
-  gettimeofday(&t1, NULL);
   shake256(tmp, param_digest_bytes, m, mlen);
-  gettimeofday(&t2, NULL);
-  cpu_t = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
-  cpu_t += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
-  printf("sumArraysOnHost Time elapsed %.6f ms\n", cpu_t);
+  
   printf("\ntmp %u \n", DIGEST_BYTES_MAX + SALT_BYTES_MAX + SK_SEED_BYTES_MAX + 1);
   for (int i = 0; i < DIGEST_BYTES_MAX + SALT_BYTES_MAX + SK_SEED_BYTES_MAX + 1;
        i++) {
@@ -577,6 +575,7 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
 
 
 
+  gettimeofday(&t1, NULL);
 
   for (int ctr = 0; ctr <= 255; ++ctr) {
     *ctrbyte = (unsigned char)ctr;
@@ -612,6 +611,10 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
       memset(A, 0, sizeof(A));
     }
   }
+  gettimeofday(&t2, NULL);
+  cpu_t = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
+  cpu_t += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
+  printf("sumArraysOnHost Time elapsed %.6f ms\n", cpu_t);
   if (!sol_found) {
     ret = MAYO_ERR;
     goto err;
