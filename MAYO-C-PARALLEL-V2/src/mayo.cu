@@ -1,6 +1,7 @@
 #include <stdio.h>
 
 #include "mayo.cuh"
+#include "aes_cu.cuh"
 
 #define DEBUG_PRINT 0
 
@@ -205,15 +206,13 @@ int mayo2_sign_signature(unsigned char *sig,
     int ret = MAYO_OK;
 
     /* EXPAND SK */
-    unsigned char *h_S, *h_seed_sk;
+    unsigned char *h_seed_sk;
     unsigned char *d_S, *d_seed_sk;
 
 
-    unsigned char *h_O; //= sk->O;
     unsigned char *d_O;
     int mdeclen;
 
-    uint64_t *h_P; //= sk->p;
 
     const int m_vec_limbs = MAYO_2_m_vec_limbs;
 
@@ -224,10 +223,8 @@ int mayo2_sign_signature(unsigned char *sig,
     const int packed_bytes = MAYO_2_P1_bytes + MAYO_2_P2_bytes;
     const int unpacked_bytes = total_vecs * (MAYO_2_m_vec_limbs * sizeof(uint64_t));
 
-    unsigned char *d_P_bytes;
-    uint64_t *d_P_limbs;
+   
 
-    unsigned char *h_seed_pk;
 
 
 
@@ -299,11 +296,11 @@ int mayo2_sign_signature(unsigned char *sig,
     int s_stride = MAYO_2_k * MAYO_2_n;
     int O_stride = MAYO_2_v * MAYO_2_o;
 
-    int total_bytes_all =
-        BATCH * total_vecs * MAYO_2_m_vec_limbs * sizeof(uint64_t);
+    // int total_bytes_all =
+    //     BATCH * total_vecs * MAYO_2_m_vec_limbs * sizeof(uint64_t);
 
-    int blocks_unpack =
-        (total_bytes_all + THREADS - 1) / THREADS;
+    // int blocks_unpack =
+    //     (total_bytes_all + THREADS - 1) / THREADS;
 
     int in_bytes_per_sig = (MAYO_2_v * MAYO_2_o + 1) / 2;
     int blocks_per_sig = (in_bytes_per_sig + THREADS - 1) / THREADS;
@@ -319,23 +316,25 @@ int mayo2_sign_signature(unsigned char *sig,
     int total = BATCH * (O_elems + P_elems);
     int blocks_pack = (total + THREADS - 1) / THREADS;
 
+    /* AES */
+    unsigned char *d_P_packed_batch;
+    uint64_t *d_P_unpacked_batch;
+    uint64_t *d_rkeys_batch = NULL;
+    
+
+
+
 
 
     /**** EXPAND SK ***/
-    cudaMallocHost((void**)&h_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes) * sizeof(uint8_t)*BATCH);
     cudaMallocHost((void**)&h_seed_sk, MAYO_2_sk_seed_bytes * sizeof(uint8_t)*BATCH);
-    cudaMallocHost((void**)&h_O, MAYO_2_v * MAYO_2_o * sizeof(unsigned char)*BATCH);
-    cudaMallocHost((void**)&h_P, unpacked_bytes * BATCH);
-    cudaMallocHost((void**)&h_seed_pk,
-                MAYO_2_pk_seed_bytes * BATCH);
+    
 
 
 
     cudaMalloc((void**)&d_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes) * sizeof(uint8_t)*BATCH);
     cudaMalloc((void**)&d_seed_sk, MAYO_2_sk_seed_bytes * sizeof(uint8_t)*BATCH);
     cudaMalloc((void**)&d_O, MAYO_2_v * MAYO_2_o * sizeof(unsigned char)*BATCH);
-    cudaMalloc((void**)&d_P_bytes, packed_bytes*BATCH);
-    cudaMalloc((void**)&d_P_limbs, unpacked_bytes*BATCH);
     
     /******************************************************************************* */
 
@@ -385,6 +384,18 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaMalloc((void**)&d_sol_found, BATCH);
     cudaMalloc((void**)&d_s, s_stride * BATCH);
 
+
+    /* AES */
+    
+
+    cudaMalloc((void **)&d_P_packed_batch,
+            BATCH * packed_bytes);
+
+    cudaMalloc((void **)&d_P_unpacked_batch,
+            BATCH * unpacked_bytes);
+
+    cudaMalloc((void **)&d_rkeys_batch,
+            BATCH * AES128_SK_EXP_WORDS * sizeof(uint64_t));
     
 
    
@@ -392,10 +403,9 @@ int mayo2_sign_signature(unsigned char *sig,
 
 
 
-    sk_t *d_sk;
-    cudaMalloc((void **)&d_sk, BATCH * sizeof(sk_t));
+    
 
-    alignas(32) sk_t sk[BATCH];
+    // alignas(32) sk_t sk[BATCH];
 
     // ret = mayo_expand_sk(csk, sk);
     
@@ -431,16 +441,15 @@ int mayo2_sign_signature(unsigned char *sig,
 
 
     /*  seed_pk for AES */
-    cudaMemcpy2D(
-        h_seed_pk,
-        MAYO_2_pk_seed_bytes,
-        d_S,
-        MAYO_2_pk_seed_bytes + MAYO_2_O_bytes,
-        MAYO_2_pk_seed_bytes,
-        BATCH,
-        cudaMemcpyDeviceToHost
-    );
-
+    // cudaMemcpy2D(
+    //     h_seed_pk,
+    //     MAYO_2_pk_seed_bytes,
+    //     d_S,
+    //     MAYO_2_pk_seed_bytes + MAYO_2_O_bytes,
+    //     MAYO_2_pk_seed_bytes,
+    //     BATCH,
+    //     cudaMemcpyDeviceToHost
+    // );
 
     /* Decode O in GPU */
     decode<<<blocks_per_sig * BATCH, THREADS>>>(
@@ -452,31 +461,59 @@ int mayo2_sign_signature(unsigned char *sig,
         MAYO_2_v * MAYO_2_o
     );
 
+
+    const int S_stride = MAYO_2_pk_seed_bytes + MAYO_2_O_bytes;
+
+    int threads_key = 128;
+    int blocks_key = (BATCH + threads_key - 1) / threads_key;
+
+    aes128_key_expand_batch<<<blocks_key, threads_key>>>(
+        d_S,
+        S_stride,
+        d_rkeys_batch,
+        BATCH
+    );
+
+    const int groups_per_batch = (packed_bytes + 63) / 64;
+    const int total_groups = BATCH * groups_per_batch;
+
+    int blocks_aes = (total_groups + THREADS - 1) / THREADS;
+
+    aes128_ctr4x_batch<<<blocks_aes, THREADS>>>(
+        d_P_packed_batch,
+        packed_bytes,
+        d_rkeys_batch,
+        groups_per_batch,
+        BATCH
+    );
+
+
+    int total_unpack_threads = BATCH * total_vecs;
+    int blocks_unpack = (total_unpack_threads + THREADS - 1) / THREADS;
+
+    unpack_m_vecs_batch<<<blocks_unpack, THREADS>>>(
+        d_P_packed_batch,
+        d_P_unpacked_batch,
+        packed_bytes,
+        total_vecs,
+        BATCH
+    );
+
+    
+
     /* CPU AES */
-    for (int i = 0; i < BATCH; i++)
-    {
-        AES_128_CTR((unsigned char *)h_P + i * packed_bytes,
-                    packed_bytes,
-                    h_seed_pk + i * MAYO_2_pk_seed_bytes,
-                    MAYO_2_pk_seed_bytes);
-    }
+    // for (int i = 0; i < BATCH; i++)
+    // {
+    //     AES_128_CTR((unsigned char *)h_P + i * packed_bytes,
+    //                 packed_bytes,
+    //                 h_seed_pk + i * MAYO_2_pk_seed_bytes,
+    //                 MAYO_2_pk_seed_bytes);
+    // }
     
 
 
-    /* P bytes CPU -> GPU */
-    cudaMemcpy(d_P_bytes,
-            (unsigned char *)h_P,
-            packed_bytes * BATCH,
-            cudaMemcpyHostToDevice);
-
-
-    /* Unpack P1/P2 */
-    unpack_m_vecs<<<blocks_unpack, THREADS>>>(
-        d_P_bytes,
-        d_P_limbs,
-        total_vecs
-    );
-
+    
+    uint64_t *d_P_limbs = d_P_unpacked_batch;
 
     /*  L = (P1 + P1^T)O + P2 */
     P1P1t_times_O<<<blocks_P1P1t, THREADS>>>(
@@ -573,6 +610,9 @@ int mayo2_sign_signature(unsigned char *sig,
 
     cudaMemcpy(d_m, h_msg,  mlen*BATCH, cudaMemcpyHostToDevice);
 
+    cudaEventRecord(start);
+
+
     shake256<<<BATCH,25>>>(d_digest, MAYO_2_digest_bytes, d_m, mlen, 0);
 
     // cudaMemcpy(h_digest,
@@ -658,7 +698,6 @@ int mayo2_sign_signature(unsigned char *sig,
     int sol_batch = -1;
     int sol_ctr = -1;
 
-    cudaEventRecord(start);
 
     for (int ctr = 0; ctr < (256 + BATCH - 1) / BATCH; ctr++)
     {
@@ -963,10 +1002,7 @@ int mayo2_sign_signature(unsigned char *sig,
     
     
 
-    cudaFreeHost(h_S);
     cudaFreeHost(h_seed_sk);
-    cudaFreeHost(h_O);
-    cudaFreeHost(h_P);
     cudaFreeHost(h_msg);
     cudaFreeHost(h_tmp);
     cudaFreeHost(h_salt);
@@ -985,7 +1021,6 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaFreeHost(h_Ar);
     cudaFreeHost(h_sol_found);
     cudaFreeHost(h_s);
-    cudaFreeHost(h_seed_pk);
     
 
     
@@ -993,8 +1028,6 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaFree(d_S);
     cudaFree(d_seed_sk);
     cudaFree(d_O);
-    cudaFree(d_P_bytes);
-    cudaFree(d_P_limbs);
     cudaFree(d_tmp);
     cudaFree(d_m);
     cudaFree(d_salt);
@@ -1014,6 +1047,9 @@ int mayo2_sign_signature(unsigned char *sig,
     cudaFree(d_sol_found);
     cudaFree(d_s);
     cudaFree(d_digest);
+    cudaFree(d_P_packed_batch);
+    cudaFree(d_P_unpacked_batch);
+    cudaFree(d_rkeys_batch);
 
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
@@ -1024,197 +1060,197 @@ int mayo2_sign_signature(unsigned char *sig,
 
 }
 
-int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
-{
-    int ret = MAYO_OK;
+// int mayo_expand_sk(const unsigned char *csk, sk_t *sk)
+// {
+//     int ret = MAYO_OK;
     
 
-    unsigned char *h_S, *h_seed_sk;
-    unsigned char *d_S, *d_seed_sk;
+//     unsigned char *h_S, *h_seed_sk;
+//     unsigned char *d_S, *d_seed_sk;
 
 
-    unsigned char *h_O; //= sk->O;
-    unsigned char *d_O;
-    int mdeclen;
+//     unsigned char *h_O; //= sk->O;
+//     unsigned char *d_O;
+//     int mdeclen;
 
-    uint64_t *h_P; //= sk->p;
+//     uint64_t *h_P; //= sk->p;
 
-    const int m_vec_limbs = MAYO_2_m_vec_limbs;
+//     const int m_vec_limbs = MAYO_2_m_vec_limbs;
 
-    const int p1_vecs = MAYO_2_v * (MAYO_2_v + 1) / 2;
-    const int p2_vecs = MAYO_2_v * MAYO_2_o;
-    const int total_vecs = p1_vecs + p2_vecs;
+//     const int p1_vecs = MAYO_2_v * (MAYO_2_v + 1) / 2;
+//     const int p2_vecs = MAYO_2_v * MAYO_2_o;
+//     const int total_vecs = p1_vecs + p2_vecs;
 
-    const int packed_bytes = MAYO_2_P1_bytes + MAYO_2_P2_bytes;
-    const int unpacked_bytes = total_vecs * (MAYO_2_m_vec_limbs * sizeof(uint64_t));
+//     const int packed_bytes = MAYO_2_P1_bytes + MAYO_2_P2_bytes;
+//     const int unpacked_bytes = total_vecs * (MAYO_2_m_vec_limbs * sizeof(uint64_t));
 
-    unsigned char *d_P_bytes;
-    uint64_t *d_P_limbs;
+//     unsigned char *d_P_bytes;
+//     uint64_t *d_P_limbs;
 
-    /* First SHAKE 256*/
-    cudaMallocHost((void**)&h_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes) * sizeof(uint8_t)*BATCH);
-    cudaMallocHost((void**)&h_seed_sk, MAYO_2_sk_seed_bytes * sizeof(uint8_t)*BATCH);
+//     /* First SHAKE 256*/
+//     cudaMallocHost((void**)&h_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes) * sizeof(uint8_t)*BATCH);
+//     cudaMallocHost((void**)&h_seed_sk, MAYO_2_sk_seed_bytes * sizeof(uint8_t)*BATCH);
 
-    cudaMalloc((void**)&d_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes) * sizeof(uint8_t)*BATCH);
-    cudaMalloc((void**)&d_seed_sk, MAYO_2_sk_seed_bytes * sizeof(uint8_t)*BATCH);
+//     cudaMalloc((void**)&d_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes) * sizeof(uint8_t)*BATCH);
+//     cudaMalloc((void**)&d_seed_sk, MAYO_2_sk_seed_bytes * sizeof(uint8_t)*BATCH);
 
-    /* DECODE */
-    cudaMallocHost((void**)&h_O, MAYO_2_v * MAYO_2_o * sizeof(unsigned char)*BATCH);
-    cudaMalloc((void**)&d_O, MAYO_2_v * MAYO_2_o * sizeof(unsigned char)*BATCH);
+//     /* DECODE */
+//     cudaMallocHost((void**)&h_O, MAYO_2_v * MAYO_2_o * sizeof(unsigned char)*BATCH);
+//     cudaMalloc((void**)&d_O, MAYO_2_v * MAYO_2_o * sizeof(unsigned char)*BATCH);
 
-    /* Expand P1P2 */
-    cudaMallocHost((void**)&h_P, unpacked_bytes * BATCH);
+//     /* Expand P1P2 */
+//     cudaMallocHost((void**)&h_P, unpacked_bytes * BATCH);
 
 
 
-    cudaMalloc((void**)&d_P_bytes, packed_bytes*BATCH);
-    cudaMalloc((void**)&d_P_limbs, unpacked_bytes*BATCH);
+//     cudaMalloc((void**)&d_P_bytes, packed_bytes*BATCH);
+//     cudaMalloc((void**)&d_P_limbs, unpacked_bytes*BATCH);
 
-    int threadsPerBlock = THREADS;
+//     int threadsPerBlock = THREADS;
 
 
 
     
-    for(int j = 0; j< BATCH; j++)
-    {
-        for(int i = 0; i < MAYO_2_sk_seed_bytes; i++)
-        {
-            h_seed_sk[i+ j*MAYO_2_sk_seed_bytes] = csk[i];
-        }
-    }
-    cudaMemcpy(d_seed_sk, h_seed_sk, MAYO_2_sk_seed_bytes*BATCH, cudaMemcpyHostToDevice);
+//     for(int j = 0; j< BATCH; j++)
+//     {
+//         for(int i = 0; i < MAYO_2_sk_seed_bytes; i++)
+//         {
+//             h_seed_sk[i+ j*MAYO_2_sk_seed_bytes] = csk[i];
+//         }
+//     }
+//     cudaMemcpy(d_seed_sk, h_seed_sk, MAYO_2_sk_seed_bytes*BATCH, cudaMemcpyHostToDevice);
 
-    mdeclen = MAYO_2_v * MAYO_2_o;
+//     mdeclen = MAYO_2_v * MAYO_2_o;
    
 
-    float gpu_t; 
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start);
-    /***************** SHAKE256 **********************/
-    shake256<<<BATCH,25>>>(d_S, MAYO_2_pk_seed_bytes + MAYO_2_O_bytes,  d_seed_sk, MAYO_2_sk_seed_bytes, 0);
-    cudaMemcpy(h_S, d_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes)*BATCH, cudaMemcpyDeviceToHost);
-    /************************************************/
+//     float gpu_t; 
+//     cudaEvent_t start, stop;
+//     cudaEventCreate(&start);
+//     cudaEventCreate(&stop);
+//     cudaEventRecord(start);
+//     /***************** SHAKE256 **********************/
+//     shake256<<<BATCH,25>>>(d_S, MAYO_2_pk_seed_bytes + MAYO_2_O_bytes,  d_seed_sk, MAYO_2_sk_seed_bytes, 0);
+//     cudaMemcpy(h_S, d_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes)*BATCH, cudaMemcpyDeviceToHost);
+//     /************************************************/
     
-    /***************** DECODE ***********************/
-    int in_bytes_per_sig = (mdeclen + 1) / 2;
-    int blocks_per_sig = (in_bytes_per_sig + THREADS - 1) / THREADS;
-    decode<<<blocks_per_sig * BATCH, THREADS>>>(
-        d_S + MAYO_2_pk_seed_bytes,
-        d_O,
-        mdeclen,
-        blocks_per_sig,
-        MAYO_2_pk_seed_bytes + MAYO_2_O_bytes,
-        mdeclen
-    );
+//     /***************** DECODE ***********************/
+//     int in_bytes_per_sig = (mdeclen + 1) / 2;
+//     int blocks_per_sig = (in_bytes_per_sig + THREADS - 1) / THREADS;
+//     decode<<<blocks_per_sig * BATCH, THREADS>>>(
+//         d_S + MAYO_2_pk_seed_bytes,
+//         d_O,
+//         mdeclen,
+//         blocks_per_sig,
+//         MAYO_2_pk_seed_bytes + MAYO_2_O_bytes,
+//         mdeclen
+//     );
 
-    cudaDeviceSynchronize();
+//     cudaDeviceSynchronize();
 
-    cudaMemcpy(h_O,
-            d_O,
-            MAYO_2_v * MAYO_2_o * sizeof(unsigned char) * BATCH,
-            cudaMemcpyDeviceToHost);
-    // /************************************************ */
+//     cudaMemcpy(h_O,
+//             d_O,
+//             MAYO_2_v * MAYO_2_o * sizeof(unsigned char) * BATCH,
+//             cudaMemcpyDeviceToHost);
+//     // /************************************************ */
 
-    // /******************* Expand P1 P2 **************************/
-    for (int i = 0; i < BATCH; i++)
-    {
-        AES_128_CTR((unsigned char *)h_P + i * packed_bytes,
-                    packed_bytes,
-                    h_S + i * (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes),
-                    MAYO_2_pk_seed_bytes);
-    }
-    // printBatch((unsigned char*)h_P, packed_bytes, BATCH, "P:");
-    // printFirstAndLast((unsigned char*)h_P, packed_bytes, BATCH, "P:");
+//     // /******************* Expand P1 P2 **************************/
+//     for (int i = 0; i < BATCH; i++)
+//     {
+//         AES_128_CTR((unsigned char *)h_P + i * packed_bytes,
+//                     packed_bytes,
+//                     h_S + i * (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes),
+//                     MAYO_2_pk_seed_bytes);
+//     }
+//     // printBatch((unsigned char*)h_P, packed_bytes, BATCH, "P:");
+//     // printFirstAndLast((unsigned char*)h_P, packed_bytes, BATCH, "P:");
 
-    cudaMemcpy(d_P_bytes,
-           (unsigned char *)h_P,
-           packed_bytes * BATCH,
-           cudaMemcpyHostToDevice);
+//     cudaMemcpy(d_P_bytes,
+//            (unsigned char *)h_P,
+//            packed_bytes * BATCH,
+//            cudaMemcpyHostToDevice);
 
-    int total_bytes_all =
-        BATCH * total_vecs * MAYO_2_m_vec_limbs * sizeof(uint64_t);
+//     // int total_bytes_all =
+//     //     BATCH * total_vecs * MAYO_2_m_vec_limbs * sizeof(uint64_t);
 
-    int blocks_unpack =
-        (total_bytes_all + threadsPerBlock - 1) / threadsPerBlock;
+//     // int blocks_unpack =
+//     //     (total_bytes_all + threadsPerBlock - 1) / threadsPerBlock;
 
-    unpack_m_vecs<<<blocks_unpack, threadsPerBlock>>>(
-        d_P_bytes,
-        d_P_limbs,
-        total_vecs
-    );
-    // cudaMemcpy(h_P_limbs, d_P_limbs, unpacked_bytes*BATCH, cudaMemcpyDeviceToHost);
-    cudaDeviceSynchronize();
-    // printFirstAndLast((unsigned char *)h_P_limbs, unpacked_bytes, BATCH, "P_limbs:");
-
-
-    // /**********************************************************/
+//     unpack_m_vecs<<<blocks_unpack, threadsPerBlock>>>(
+//         d_P_bytes,
+//         d_P_limbs,
+//         total_vecs
+//     );
+//     // cudaMemcpy(h_P_limbs, d_P_limbs, unpacked_bytes*BATCH, cudaMemcpyDeviceToHost);
+//     cudaDeviceSynchronize();
+//     // printFirstAndLast((unsigned char *)h_P_limbs, unpacked_bytes, BATCH, "P_limbs:");
 
 
-    // /******************** P1P1t_times_O *************************/
-    // compute L_i = (P1 + P1^t)*O + P2
-    int total_outputs = BATCH * MAYO_2_v * MAYO_2_o;
-
-    int blocks_P1P1t =
-        (total_outputs + THREADS - 1) / THREADS;
+//     // /**********************************************************/
 
 
-    int p1_limbs = p1_vecs * MAYO_2_m_vec_limbs;
+//     // /******************** P1P1t_times_O *************************/
+//     // compute L_i = (P1 + P1^t)*O + P2
+//     int total_outputs = BATCH * MAYO_2_v * MAYO_2_o;
 
-    P1P1t_times_O<<<blocks_P1P1t, THREADS>>>(
-        d_P_limbs,
-        d_O,
-        d_P_limbs + p1_limbs
-    );
+//     int blocks_P1P1t =
+//         (total_outputs + THREADS - 1) / THREADS;
+
+
+//     int p1_limbs = p1_vecs * MAYO_2_m_vec_limbs;
+
+//     P1P1t_times_O<<<blocks_P1P1t, THREADS>>>(
+//         d_P_limbs,
+//         d_O,
+//         d_P_limbs + p1_limbs
+//     );
 
     
-    cudaDeviceSynchronize();
+//     cudaDeviceSynchronize();
     
-    cudaMemcpy(h_P,
-           d_P_limbs,
-           unpacked_bytes * BATCH,
-           cudaMemcpyDeviceToHost);
+//     cudaMemcpy(h_P,
+//            d_P_limbs,
+//            unpacked_bytes * BATCH,
+//            cudaMemcpyDeviceToHost);
     
 
-    // /*********************************************************/
+//     // /*********************************************************/
 
-    mayo_secure_clear(h_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes) * BATCH);
+//     mayo_secure_clear(h_S, (MAYO_2_pk_seed_bytes + MAYO_2_O_bytes) * BATCH);
 
-    for (int i = 0; i < BATCH; i++)
-    {
-        memcpy(sk[i].O,
-            h_O + i * (MAYO_2_v * MAYO_2_o),
-            MAYO_2_v * MAYO_2_o * sizeof(unsigned char));
+//     for (int i = 0; i < BATCH; i++)
+//     {
+//         memcpy(sk[i].O,
+//             h_O + i * (MAYO_2_v * MAYO_2_o),
+//             MAYO_2_v * MAYO_2_o * sizeof(unsigned char));
 
-        memcpy(sk[i].p,
-            (unsigned char *)h_P + i * unpacked_bytes,
-            unpacked_bytes);
-    }
+//         memcpy(sk[i].p,
+//             (unsigned char *)h_P + i * unpacked_bytes,
+//             unpacked_bytes);
+//     }
 
-    // cudaEventRecord(stop);
-    // cudaEventSynchronize(stop);
-    // cudaEventElapsedTime(&gpu_t, start, stop);    
-    // printf("Time elapsed %.6f ms\n", gpu_t);
-
-
+//     // cudaEventRecord(stop);
+//     // cudaEventSynchronize(stop);
+//     // cudaEventElapsedTime(&gpu_t, start, stop);    
+//     // printf("Time elapsed %.6f ms\n", gpu_t);
 
 
-    cudaFree(d_S);
-    cudaFree(d_seed_sk);
-    cudaFree(d_O);
-    cudaFree(d_P_bytes);
-    cudaFree(d_P_limbs);
 
-    cudaFreeHost(h_S);
-    cudaFreeHost(h_seed_sk);
-    cudaFreeHost(h_O);
-    cudaFreeHost(h_P);
 
-    // cudaFreeHost(h_P2_tmp);
+//     cudaFree(d_S);
+//     cudaFree(d_seed_sk);
+//     cudaFree(d_O);
+//     cudaFree(d_P_bytes);
+//     cudaFree(d_P_limbs);
 
-    return ret;
-}
+//     cudaFreeHost(h_S);
+//     cudaFreeHost(h_seed_sk);
+//     cudaFreeHost(h_O);
+//     cudaFreeHost(h_P);
+
+//     // cudaFreeHost(h_P2_tmp);
+
+//     return ret;
+// }
 
 __global__ void decode(const unsigned char *m,
                        unsigned char *mdec,

@@ -6,7 +6,7 @@
 #include <string.h>
 #include <stdalign.h>
 #include "fips202.cuh"
-#include "aes_c.h"
+// #include "aes_c.h"
 #include "arithmetic.cuh"
 #include <cuda_runtime.h>
 
@@ -19,7 +19,9 @@
 #define THREADS (256)
 
 
-#define BATCH (100)
+#define BATCH (16)
+
+
 
 
 #define F_TAIL_64                                                              \

@@ -302,11 +302,11 @@ static void expand_P1_P2(const mayo_params_t *p, uint64_t *P,
 #ifndef ENABLE_PARAMS_DYNAMIC
   (void)p;
 #endif
-  printf("%d\r\n", PARAM_pk_seed_bytes(p));
-  printElement((unsigned char*)seed_pk, PARAM_pk_seed_bytes(p), "seed_pk:");
+  // printf("%d\r\n", PARAM_pk_seed_bytes(p));
+  // printElement((unsigned char*)seed_pk, PARAM_pk_seed_bytes(p), "seed_pk:");
   PK_PRF((unsigned char *)P, PARAM_P1_bytes(p) + PARAM_P2_bytes(p), seed_pk,
          PARAM_pk_seed_bytes(p));
-    printElement((unsigned char *)P, PARAM_P1_bytes(p) + PARAM_P2_bytes(p),"P:");
+    // printElement((unsigned char *)P, PARAM_P1_bytes(p) + PARAM_P2_bytes(p),"P:");
 
   unpack_m_vecs((unsigned char *)P, P,
                 (PARAM_P1_limbs(p) + PARAM_P2_limbs(p)) / PARAM_m_vec_limbs(p),
@@ -619,7 +619,7 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
     ret = MAYO_ERR;
     goto err;
   }
-      printElement(x, param_k * param_n, "sample_solution x:");
+      // printElement(x, param_k * param_n, "sample_solution x:");
 
 
   for (int i = 0; i <= param_k - 1; ++i) {
@@ -628,7 +628,7 @@ int mayo_sign_signature(const mayo_params_t *p, unsigned char *sig,
     mat_add(vi, Ox, s + i * param_n, param_n - param_o, 1);
     memcpy(s + i * param_n + (param_n - param_o), x + i * param_o, param_o);
   }
-  printElement(s, param_n * param_k, "SERIAL s:");
+  // printElement(s, param_n * param_k, "SERIAL s:");
   encode(s, sig, param_n * param_k);
 
   memcpy(sig + param_sig_bytes - param_salt_bytes, salt, param_salt_bytes);
