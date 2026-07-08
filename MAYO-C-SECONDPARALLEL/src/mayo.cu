@@ -962,6 +962,7 @@ int mayo2_sign_signature(unsigned char *sig,
 
     printf("GPU mayo2_sign_signature total time: %.6f ms\n", gpu_t);
     printf("GPU mayo2_sign_signature time per batch: %.6f ms\n", gpu_t/BATCH);
+    printf("GPU mayo2_sign_signature Throughput with %d batches: %.6f ms\n",BATCH, BATCH/(gpu_t/1000.0));
 
     if (!sol_found)
     {
