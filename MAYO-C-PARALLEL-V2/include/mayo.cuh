@@ -19,7 +19,8 @@
 #define THREADS (256)
 
 
-#define BATCH (64)
+#define BATCH (32)
+#define REPEATS (10)
 
 
 

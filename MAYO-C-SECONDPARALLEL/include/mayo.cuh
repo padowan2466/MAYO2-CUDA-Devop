@@ -21,6 +21,13 @@
 
 #define BATCH (64)
 
+struct alignas(32) u64x4 {
+    uint64_t x0;
+    uint64_t x1;
+    uint64_t x2;
+    uint64_t x3;
+};
+
 
 
 

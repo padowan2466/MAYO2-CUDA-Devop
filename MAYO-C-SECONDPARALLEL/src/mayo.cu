@@ -62,13 +62,14 @@ void mul_add_mat_x_m_mat(int m_vec_limbs,
                                       int acc_stride              
 );
 
+template<int WARPS_PER_BLOCK>
 __global__
-void P1_times_Vt(const uint64_t *P1,
-                              const unsigned char *Vdec,
-                              uint64_t *Pv,
-                              int p_limbs_per_sig,
-                              int Vdec_stride,
-                              int Pv_stride);
+void P1_times_Vt(const uint64_t *__restrict__ P1,
+                 const unsigned char *__restrict__ Vdec,
+                 uint64_t *__restrict__ Pv,
+                 int p_limbs_per_sig,
+                 int Vdec_stride,
+                 int Pv_stride);
 
 
 __global__
@@ -264,6 +265,12 @@ int mayo2_sign_signature(unsigned char *sig,
     int p1_limbs = p1_vecs * MAYO_2_m_vec_limbs;
     int p2_limbs = p2_vecs * MAYO_2_m_vec_limbs;
     int p_limbs_per_sig = p1_limbs + p2_limbs;
+
+    const int Vdec_stride_Pv = MAYO_2_k * MAYO_2_v;
+    const int Pv_stride_Pv   = MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs;
+
+    constexpr int WARPS_PER_BLOCK_PV = 4;
+    constexpr int THREADS_PV = WARPS_PER_BLOCK_PV * 32;
 
     unsigned char *h_A, *d_A;
     uint64_t *d_Pv, *h_Pv;
@@ -790,16 +797,20 @@ int mayo2_sign_signature(unsigned char *sig,
                 0,
                 MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs * sizeof(uint64_t) * BATCH);
 
-        int total_Pv = BATCH * MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs;
-        int blocks_Pv = (total_Pv + THREADS - 1) / THREADS;
+        dim3 block_Pv(THREADS_PV);
 
-        P1_times_Vt<<<blocks_Pv, THREADS>>>(
-            d_P_batch_alias,
+        dim3 grid_Pv(
+            (MAYO_2_v + WARPS_PER_BLOCK_PV - 1) / WARPS_PER_BLOCK_PV,
+            BATCH
+        );
+
+        P1_times_Vt<WARPS_PER_BLOCK_PV><<<grid_Pv, block_Pv>>>(
+            d_P_limbs,
             d_Vdec,
             d_Pv,
             p_limbs_per_sig,
-            MAYO_2_k * MAYO_2_v,
-            MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs
+            Vdec_stride_Pv,
+            Pv_stride_Pv
         );
 
         
@@ -1300,31 +1311,18 @@ void mul_add_mat_x_m_mat(int m_vec_limbs,
     acc_b[m_vec_limbs * (r * bs_mat_cols + k) + limb] = sum;
 }
 
+template<int WARPS_PER_BLOCK>
 __global__
-void P1_times_Vt(const uint64_t *P1,
-                              const unsigned char *Vdec,
-                              uint64_t *Pv,
-                              int p_limbs_per_sig,
-                              int Vdec_stride,
-                              int Pv_stride)
+void P1_times_Vt(const uint64_t *__restrict__ P1,
+                        const unsigned char *__restrict__ Vdec,
+                        uint64_t *__restrict__ Pv,
+                        int p_limbs_per_sig,
+                        int Vdec_stride,
+                        int Pv_stride)
 {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    __shared__ unsigned char shV[MAYO_2_k * MAYO_2_v];
 
-    int outputs_per_batch = MAYO_2_v * MAYO_2_k * MAYO_2_m_vec_limbs;
-    int total = BATCH * outputs_per_batch;
-
-    if (tid >= total) {
-        return;
-    }
-
-    int batch = tid / outputs_per_batch;
-    int local = tid % outputs_per_batch;
-
-    int limb = local % MAYO_2_m_vec_limbs;
-
-    int tmp = local / MAYO_2_m_vec_limbs;
-    int k = tmp % MAYO_2_k;
-    int r = tmp / MAYO_2_k;
+    int batch = blockIdx.y;
 
     const uint64_t *P1_b =
         P1 + batch * p_limbs_per_sig;
@@ -1335,22 +1333,112 @@ void P1_times_Vt(const uint64_t *P1,
     uint64_t *Pv_b =
         Pv + batch * Pv_stride;
 
-    uint64_t sum = 0;
+    int tid = threadIdx.x;
 
-    for (int c = r; c < MAYO_2_v; c++)
-    {
-        int p1_index = upper_triangular_index(r, c, MAYO_2_v);
-
-        uint64_t p1_val =
-            P1_b[p1_index * MAYO_2_m_vec_limbs + limb];
-
-        uint8_t v =
-            Vdec_b[k * MAYO_2_v + c];
-
-        sum ^= gf16_vec_mul(p1_val, v);
+    for (int i = tid; i < MAYO_2_k * MAYO_2_v; i += blockDim.x) {
+        shV[i] = Vdec_b[i];
     }
 
-    Pv_b[(r * MAYO_2_k + k) * MAYO_2_m_vec_limbs + limb] = sum;
+    __syncthreads();
+
+    int warp_in_block = threadIdx.x >> 5;
+    int lane = threadIdx.x & 31;
+
+    int r = blockIdx.x * WARPS_PER_BLOCK + warp_in_block;
+
+    if (r >= MAYO_2_v) {
+        return;
+    }
+
+    const u64x4 *__restrict__ P1v =
+        reinterpret_cast<const u64x4 *>(P1_b);
+
+    u64x4 *__restrict__ Pvv =
+        reinterpret_cast<u64x4 *>(Pv_b);
+
+    unsigned long long s00 = 0, s01 = 0, s02 = 0, s03 = 0;
+    unsigned long long s10 = 0, s11 = 0, s12 = 0, s13 = 0;
+    unsigned long long s20 = 0, s21 = 0, s22 = 0, s23 = 0;
+    unsigned long long s30 = 0, s31 = 0, s32 = 0, s33 = 0;
+
+    int row_start = r * MAYO_2_v - (r * (r - 1)) / 2;
+
+    for (int c = r + lane; c < MAYO_2_v; c += 32)
+    {
+        int p1_index = row_start + (c - r);
+
+        u64x4 p = P1v[p1_index];
+
+        uint8_t v0 = shV[0 * MAYO_2_v + c] & 0xF;
+        uint8_t v1 = shV[1 * MAYO_2_v + c] & 0xF;
+        uint8_t v2 = shV[2 * MAYO_2_v + c] & 0xF;
+        uint8_t v3 = shV[3 * MAYO_2_v + c] & 0xF;
+
+        s00 ^= gf16_vec_mul(p.x0, v0);
+        s01 ^= gf16_vec_mul(p.x1, v0);
+        s02 ^= gf16_vec_mul(p.x2, v0);
+        s03 ^= gf16_vec_mul(p.x3, v0);
+
+        s10 ^= gf16_vec_mul(p.x0, v1);
+        s11 ^= gf16_vec_mul(p.x1, v1);
+        s12 ^= gf16_vec_mul(p.x2, v1);
+        s13 ^= gf16_vec_mul(p.x3, v1);
+
+        s20 ^= gf16_vec_mul(p.x0, v2);
+        s21 ^= gf16_vec_mul(p.x1, v2);
+        s22 ^= gf16_vec_mul(p.x2, v2);
+        s23 ^= gf16_vec_mul(p.x3, v2);
+
+        s30 ^= gf16_vec_mul(p.x0, v3);
+        s31 ^= gf16_vec_mul(p.x1, v3);
+        s32 ^= gf16_vec_mul(p.x2, v3);
+        s33 ^= gf16_vec_mul(p.x3, v3);
+    }
+
+    unsigned mask = 0xffffffffu;
+
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+    {
+        s00 ^= __shfl_xor_sync(mask, s00, offset);
+        s01 ^= __shfl_xor_sync(mask, s01, offset);
+        s02 ^= __shfl_xor_sync(mask, s02, offset);
+        s03 ^= __shfl_xor_sync(mask, s03, offset);
+
+        s10 ^= __shfl_xor_sync(mask, s10, offset);
+        s11 ^= __shfl_xor_sync(mask, s11, offset);
+        s12 ^= __shfl_xor_sync(mask, s12, offset);
+        s13 ^= __shfl_xor_sync(mask, s13, offset);
+
+        s20 ^= __shfl_xor_sync(mask, s20, offset);
+        s21 ^= __shfl_xor_sync(mask, s21, offset);
+        s22 ^= __shfl_xor_sync(mask, s22, offset);
+        s23 ^= __shfl_xor_sync(mask, s23, offset);
+
+        s30 ^= __shfl_xor_sync(mask, s30, offset);
+        s31 ^= __shfl_xor_sync(mask, s31, offset);
+        s32 ^= __shfl_xor_sync(mask, s32, offset);
+        s33 ^= __shfl_xor_sync(mask, s33, offset);
+    }
+
+    if (lane == 0)
+    {
+        Pvv[r * MAYO_2_k + 0] = {
+            (uint64_t)s00, (uint64_t)s01, (uint64_t)s02, (uint64_t)s03
+        };
+
+        Pvv[r * MAYO_2_k + 1] = {
+            (uint64_t)s10, (uint64_t)s11, (uint64_t)s12, (uint64_t)s13
+        };
+
+        Pvv[r * MAYO_2_k + 2] = {
+            (uint64_t)s20, (uint64_t)s21, (uint64_t)s22, (uint64_t)s23
+        };
+
+        Pvv[r * MAYO_2_k + 3] = {
+            (uint64_t)s30, (uint64_t)s31, (uint64_t)s32, (uint64_t)s33
+        };
+    }
 }
 
 __global__
